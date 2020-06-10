@@ -48,10 +48,12 @@ int SmartNodePayments::PayoutsPerBlock(int nHeight)
 
     }else{
 
+
         if(nHeight >= TESTNET_V1_2_8_PAYMENTS_HEIGHT && nHeight < TESTNET_V1_3_HEIGHT)
             return TESTNET_V1_2_8_NODES_PER_BLOCK;
         if(nHeight >= TESTNET_V1_3_HEIGHT)
             return TESTNET_V1_3_NODES_PER_BLOCK;
+
 
     }
 
@@ -70,10 +72,12 @@ int SmartNodePayments::PayoutInterval(int nHeight)
 
     }else{
 
+
         if(nHeight >= TESTNET_V1_2_8_PAYMENTS_HEIGHT && nHeight < TESTNET_V1_3_HEIGHT)
             return TESTNET_V1_2_8_NODES_BLOCK_INTERVAL;
         if(nHeight >= TESTNET_V1_3_HEIGHT)
             return TESTNET_V1_3_NODES_BLOCK_INTERVAL;
+
 
     }
 
