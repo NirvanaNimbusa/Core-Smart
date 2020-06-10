@@ -17,6 +17,8 @@
 #include "sync.h"
 #include "../smartnode/instantx.h"
 #include "../smartnode/spork.h"
+#include "../smartnode/smartnodesync.h"
+#include "smartvoting/votevalidation.h"
 #include "ui_interface.h"
 #include "wallet/wallet.h"
 #include "wallet/walletdb.h" // for BackupWallet
@@ -251,7 +253,16 @@ WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransact
             setAddress.insert(rcp.address);
             ++nAddresses;
 
-            CScript scriptPubKey = GetScriptForDestination(CBitcoinAddress(rcp.address.toStdString()).Get());
+            CScript scriptPubKey;
+            if (rcp.nLockTime > 0)
+            {
+                scriptPubKey = GetLockedScriptForDestination(CBitcoinAddress(rcp.address.toStdString()).Get(),
+                    rcp.nLockTime);
+            }
+            else
+            {
+                scriptPubKey = GetScriptForDestination(CBitcoinAddress(rcp.address.toStdString()).Get());
+            }
             CRecipient recipient = {scriptPubKey, rcp.amount, rcp.fSubtractFeeFromAmount};
             vecSend.push_back(recipient);
 
@@ -478,6 +489,204 @@ bool WalletModel::changePassphrase(const SecureString &oldPass, const SecureStri
     return retval;
 }
 
+
+WalletModel::EncryptionStatus WalletModel::getVotingEncryptionStatus() const
+{
+    if(!wallet->IsVotingCrypted())
+    {
+        return Unencrypted;
+    }
+    else if(wallet->IsVotingLocked())
+    {
+        return Locked;
+    }
+    else
+    {
+        return Unlocked;
+    }
+}
+
+bool WalletModel::setVotingEncrypted(bool encrypted, const SecureString &passphrase)
+{
+    if(encrypted)
+    {
+        // Encrypt
+        return wallet->EncryptVoting(passphrase);
+    }
+    else
+    {
+        // Decrypt -- TODO; not supported yet
+        return false;
+    }
+}
+
+bool WalletModel::setVotingLocked(bool locked, const SecureString &passPhrase)
+{
+    if(locked)
+    {
+        // Lock
+        return wallet->LockVoting();
+    }
+    else
+    {
+        // Unlock
+        return wallet->UnlockVoting(passPhrase);
+    }
+}
+
+bool WalletModel::changeVotingPassphrase(const SecureString &oldPass, const SecureString &newPass)
+{
+    bool retval;
+    {
+        LOCK(wallet->cs_wallet);
+        wallet->LockVoting(); // Make sure wallet is locked before attempting pass change
+        retval = wallet->ChangeVotingPassphrase(oldPass, newPass);
+    }
+    return retval;
+}
+
+void WalletModel::VoteKeys(std::set<CVoteKey> &setVoteKeys)
+{
+    if( !wallet ) return;
+    LOCK(wallet->cs_wallet);
+    std::set<CKeyID> setKeyIds;
+    setVoteKeys.clear();
+
+    pwalletMain->GetVotingKeys(setKeyIds);
+
+    for( auto it : setKeyIds ){
+        setVoteKeys.insert(CVoteKey(it));
+    }
+}
+
+void WalletModel::VoteKeyIDs(std::set<CKeyID> &setKeyIds)
+{
+    if( !wallet ) return;
+    LOCK(wallet->cs_wallet);
+    pwalletMain->GetVotingKeys(setKeyIds);
+}
+
+int WalletModel::voteKeyCount(const bool fActiveOnly)
+{
+    if( !wallet ) return 0;
+    LOCK(wallet->cs_wallet);
+    std::set<CKeyID> setKeyIds;
+    wallet->GetVotingKeys(setKeyIds);
+
+    int nCount = 0;
+    for( auto it : setKeyIds ){
+        if( !wallet->mapVotingKeyMetadata[it].fEnabled && fActiveOnly ) continue;
+        ++nCount;
+    }
+
+    return nCount;
+}
+
+QString WalletModel::votingPowerString(const bool fActiveOnly)
+{
+    if( !wallet ) return "Wallet not available";
+    if( !smartnodeSync.IsBlockchainSynced() ) return "Not synced";
+    LOCK(wallet->cs_wallet);
+    QString votingPowerString;
+    int nTotalPower = 0;
+
+    std::set<CKeyID> setKeyIds;
+    wallet->GetVotingKeys(setKeyIds);
+
+    for( auto it : setKeyIds ){
+        if( !wallet->mapVotingKeyMetadata[it].fEnabled && fActiveOnly ) continue;
+
+        CVoteKey voteKey(it);
+
+        if( !voteKey.IsValid() ) return "Key error";
+
+        int64_t nVotingPower = GetVotingPower(voteKey);
+
+        if( nVotingPower >= 0){
+            nTotalPower += nVotingPower;
+        }else if( nVotingPower == -1 ){
+            return "Updating";
+        }
+
+    }
+
+    votingPowerString = QString::number(nTotalPower);
+    AddThousandsSpaces(votingPowerString);
+    return votingPowerString + " SMART";
+}
+
+QString WalletModel::votingPowerString(const CVoteKey &voteKey)
+{
+    if( !wallet ) return "Wallet not available";
+    if( !smartnodeSync.IsBlockchainSynced() ) return "Not synced";
+
+    LOCK(wallet->cs_wallet);
+    QString votingPowerString;
+    int64_t nTotalPower = 0;
+    CKeyID keyId;
+
+    if( !voteKey.GetKeyID(keyId) ) return "Key error";
+
+    if( !wallet->HaveVotingKey(keyId) ) return "Unavailable";
+
+    int64_t nVotingPower = GetVotingPower(voteKey);
+
+    if( nVotingPower >= 0){
+        nTotalPower = nVotingPower;
+    }else if( nVotingPower == -1 ){
+        return "Updating";
+    }
+
+    votingPowerString = QString::number(nTotalPower);
+    AddThousandsSpaces(votingPowerString);
+    return votingPowerString + " SMART";
+}
+
+QString WalletModel::voteAddressString(const CVoteKey& voteKey)
+{
+    if( !wallet ) return "Wallet not available";
+    LOCK(wallet->cs_wallet);
+
+    QString voteAddressString = "Not registered";
+
+    CKeyID keyId;
+
+    if( !voteKey.GetKeyID(keyId) ) return "Key error";
+    if( !wallet->HaveVotingKey(keyId) ) return "Unavailable";
+
+    CVoteKeyValue voteKeyValue;
+    uint256 &registrationHash = wallet->mapVotingKeyMetadata[keyId].registrationTxHash;
+    if( !voteKey.GetKeyID(keyId) ){
+        voteAddressString = "Invalid Key";
+    }else if( GetVoteKeyValue(voteKey, voteKeyValue) ){
+        voteAddressString = QString::fromStdString(voteKeyValue.voteAddress.ToString());
+    }else if( !registrationHash.IsNull() && GetInvalidVoteKeyRegistration(registrationHash) ){
+        voteAddressString = "Registration failed";
+    }else if( !registrationHash.IsNull() ){
+        voteAddressString = "Confirmation required";
+    }
+
+    return voteAddressString;
+}
+
+void WalletModel::updateVoteKeys(bool fEnabled)
+{
+    if( !wallet ) return;
+    LOCK(wallet->cs_wallet);
+
+    auto it = wallet->mapVotingKeyMetadata.begin();
+    while( it != wallet->mapVotingKeyMetadata.end() ){
+
+        CVoteKey voteKey(it->first);
+        if( IsRegisteredForVoting(voteKey) ){
+            it->second.fEnabled = fEnabled;
+            wallet->UpdateVotingKeyMetadata(it->first);
+        }
+        ++it;
+    }
+}
+
+
 bool WalletModel::backupWallet(const QString &filename)
 {
     return wallet->BackupWallet(filename.toLocal8Bit().data());
@@ -586,6 +795,44 @@ void WalletModel::UnlockContext::CopyFrom(const UnlockContext& rhs)
     rhs.relock = false;
 }
 
+// WalletModel::VotingUnlockContext implementation
+
+WalletModel::VotingUnlockContext WalletModel::requestVotingUnlock()
+{
+    bool was_locked = getVotingEncryptionStatus() == Locked;
+    if(was_locked)
+    {
+        // Request UI to unlock wallet
+        Q_EMIT requireVotingUnlock();
+    }
+    // If wallet is still locked, unlock was failed or cancelled, mark context as invalid
+    bool valid = getVotingEncryptionStatus() != Locked;
+
+    return VotingUnlockContext(this, valid, was_locked);
+}
+
+WalletModel::VotingUnlockContext::VotingUnlockContext(WalletModel *wallet, bool valid, bool relock):
+        wallet(wallet),
+        valid(valid),
+        relock(relock)
+{
+}
+
+WalletModel::VotingUnlockContext::~VotingUnlockContext()
+{
+    if(valid && relock)
+    {
+        wallet->setVotingLocked(true);
+    }
+}
+
+void WalletModel::VotingUnlockContext::CopyFrom(const VotingUnlockContext& rhs)
+{
+    // Transfer context; old object no longer relocks wallet
+    *this = rhs;
+    rhs.relock = false;
+}
+
 bool WalletModel::getPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const
 {
     return wallet->GetPubKey(address, vchPubKeyOut);
@@ -605,7 +852,7 @@ void WalletModel::getOutputs(const std::vector<COutPoint>& vOutpoints, std::vect
         if (!wallet->mapWallet.count(outpoint.hash)) continue;
         int nDepth = wallet->mapWallet[outpoint.hash].GetDepthInMainChain();
         if (nDepth < 0) continue;
-        COutput out(&wallet->mapWallet[outpoint.hash], outpoint.n, nDepth, true, true);
+        COutput out(&wallet->mapWallet[outpoint.hash], outpoint.n, nDepth, true, true, wallet->mapWallet[outpoint.hash].vout[outpoint.n].GetLockTime());
         vOutputs.push_back(out);
     }
 }
@@ -617,7 +864,7 @@ bool WalletModel::isSpent(const COutPoint& outpoint) const
 }
 
 // AvailableCoins + LockedCoins grouped by wallet address (put change in one group with wallet address)
-void WalletModel::listCoins(std::map<QString, std::vector<COutput> >& mapCoins) const
+void WalletModel::listCoins(std::map<QString, std::vector<COutput> >& mapCoins, const bool fSeperateChange) const
 {
     std::vector<COutput> vCoins;
     wallet->AvailableCoins(vCoins);
@@ -632,7 +879,7 @@ void WalletModel::listCoins(std::map<QString, std::vector<COutput> >& mapCoins) 
         if (!wallet->mapWallet.count(outpoint.hash)) continue;
         int nDepth = wallet->mapWallet[outpoint.hash].GetDepthInMainChain();
         if (nDepth < 0) continue;
-        COutput out(&wallet->mapWallet[outpoint.hash], outpoint.n, nDepth, true, true);
+        COutput out(&wallet->mapWallet[outpoint.hash], outpoint.n, nDepth, true, true, wallet->mapWallet[outpoint.hash].vout[outpoint.n].GetLockTime());
         if (outpoint.n < out.tx->vout.size() && wallet->IsMine(out.tx->vout[outpoint.n]) == ISMINE_SPENDABLE)
             vCoins.push_back(out);
     }
@@ -641,12 +888,13 @@ void WalletModel::listCoins(std::map<QString, std::vector<COutput> >& mapCoins) 
     {
         COutput cout = out;
 
-        while (wallet->IsChange(cout.tx->vout[cout.i]) && cout.tx->vin.size() > 0 && wallet->IsMine(cout.tx->vin[0]))
-        {
-            if (!wallet->mapWallet.count(cout.tx->vin[0].prevout.hash)) break;
-            cout = COutput(&wallet->mapWallet[cout.tx->vin[0].prevout.hash], cout.tx->vin[0].prevout.n, 0, true, true);
+        if( fSeperateChange ){
+            while (wallet->IsChange(cout.tx->vout[cout.i]) && cout.tx->vin.size() > 0 && wallet->IsMine(cout.tx->vin[0]))
+            {
+                if (!wallet->mapWallet.count(cout.tx->vin[0].prevout.hash)) break;
+                cout = COutput(&wallet->mapWallet[cout.tx->vin[0].prevout.hash], cout.tx->vin[0].prevout.n, 0, true, true, wallet->mapWallet[cout.tx->vin[0].prevout.hash].vout[cout.tx->vin[0].prevout.n].GetLockTime());
+            }
         }
-
         CTxDestination address;
         if(!out.fSpendable || !ExtractDestination(cout.tx->vout[cout.i].scriptPubKey, address))
             continue;

@@ -83,6 +83,8 @@ BITCOIN_CORE_H = \
   bip39.h \
   bip39_english.h \
   bloom.h \
+  cachemap.h \
+  cachemultimap.h \
   chain.h \
   chainparams.h \
   chainparamsbase.h \
@@ -132,6 +134,14 @@ BITCOIN_CORE_H = \
   rpc/protocol.h \
   rpc/server.h \
   rpc/register.h \
+  sapi/sapi.h \
+  sapi/sapi_address.h \
+  sapi/sapi_blockchain.h \
+  sapi/sapi_common.h \
+  sapi/sapi_transaction.h \
+  sapi/sapi_smartnodes.h \
+  sapi/sapi_smartrewards.h \
+  sapi/sapi_validation.h \
   scheduler.h \
   script/sigcache.h \
   script/sign.h \
@@ -151,6 +161,13 @@ BITCOIN_CORE_H = \
   smartrewards/rewards.h \
   smartrewards/rewardsdb.h \
   smartrewards/rewardspayments.h \
+  smartvoting/exceptions.h \
+  smartvoting/manager.h \
+  smartvoting/proposal.h \
+  smartvoting/voting.h \
+  smartvoting/votedb.h \
+  smartvoting/votekeys.h \
+  smartvoting/votevalidation.h \
   spentindex.h \
   streams.h \
   support/allocators/secure.h \
@@ -221,9 +238,19 @@ libbitcoin_server_a_SOURCES = \
   rpc/net.cpp \
   rpc/rawtransaction.cpp \
   rpc/server.cpp \
-  rpc/rpcsmartnode.cpp \
-  rpc/rpcsmartrewards.cpp \
-  rpc/rpcsmartmining.cpp \
+  rpc/smartnode.cpp \
+  rpc/smartrewards.cpp \
+  rpc/smartmining.cpp \
+  rpc/smartvoting.cpp \
+  sapi/sapi.cpp \
+  sapi/sapi_address.cpp \
+  sapi/sapi_blockchain.cpp \
+  sapi/sapi_common.cpp \
+  sapi/sapi_smartnodes.cpp \
+  sapi/sapi_smartrewards.cpp \
+  sapi/sapi_limiter.cpp \
+  sapi/sapi_transaction.cpp \
+  sapi/sapi_validation.cpp \
   script/sigcache.cpp \
   script/ismine.cpp \
   sendalert.cpp \
@@ -242,6 +269,11 @@ libbitcoin_server_a_SOURCES = \
   smartrewards/rewards.cpp \
   smartrewards/rewardsdb.cpp \
   smartrewards/rewardspayments.cpp \
+  smartvoting/proposal.cpp \
+  smartvoting/manager.cpp \
+  smartvoting/votedb.cpp \
+  smartvoting/voting.cpp \
+  smartvoting/votevalidation.cpp \
   timedata.cpp \
   torcontrol.cpp \
   txdb.cpp \
@@ -328,6 +360,7 @@ libsmartcash_consensus_a_SOURCES = \
   script/script_error.h \
   smartnode/flat-database.h \
   smartnode/spork.h \
+  smartvoting/votekeys.h \
   serialize.h \
   tinyformat.h \
   uint256.cpp \
@@ -358,6 +391,7 @@ libbitcoin_common_a_SOURCES = \
   script/sign.cpp \
   script/standard.cpp \
   smartnode/spork.cpp \
+  smartvoting/proposal.cpp \
   warnings.cpp \
   $(BITCOIN_CORE_H)
 

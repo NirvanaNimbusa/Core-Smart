@@ -34,9 +34,10 @@ std::string HelpMessageCli()
 {
     string strUsage;
     strUsage += HelpMessageGroup(_("Options:"));
-    strUsage += HelpMessageOpt("-?", _("This help message"));
+    strUsage += HelpMessageOpt("-? or -help", _("Show options and exit"));
     strUsage += HelpMessageOpt("-conf=<file>", strprintf(_("Specify configuration file (default: %s)"), BITCOIN_CONF_FILENAME));
     strUsage += HelpMessageOpt("-datadir=<dir>", _("Specify data directory"));
+    strUsage += HelpMessageOpt("-version", _("Show version information and exit"));
     AppendParamsHelpMessages(strUsage);
     strUsage += HelpMessageOpt("-rpcconnect=<ip>", strprintf(_("Send commands to node running on <ip> (default: %s)"), DEFAULT_RPCCONNECT));
     strUsage += HelpMessageOpt("-rpcport=<port>", strprintf(_("Connect to JSON-RPC on <port> (default: %u or testnet: %u)"), BaseParams(CBaseChainParams::MAIN).RPCPort(), BaseParams(CBaseChainParams::TESTNET).RPCPort()));
@@ -83,7 +84,7 @@ static int AppInitRPC(int argc, char* argv[])
         if (!mapArgs.count("-version")) {
             strUsage += "\n" + _("Usage:") + "\n" +
                   "  smartcash-cli [options] <command> [params]  " + strprintf(_("Send command to %s"), _(PACKAGE_NAME)) + "\n" +
-                  "  smartcash-cli [options] help                " + _("List commands") + "\n" +
+                  "  smartcash-cli [options] help                " + _("List Commands:") + "\n" +
                   "  smartcash-cli [options] help <command>      " + _("Get help for a command") + "\n";
 
             strUsage += "\n" + HelpMessageCli();
@@ -214,9 +215,9 @@ UniValue CallRPC(const string& strMethod, const UniValue& params)
 
     if (response.status == 0)
         throw CConnectionFailed("couldn't connect to server");
-    else if (response.status == HTTP_UNAUTHORIZED)
+    else if (response.status == HTTPStatus::UNAUTHORIZED)
         throw runtime_error("incorrect rpcuser or rpcpassword (authorization failed)");
-    else if (response.status >= 400 && response.status != HTTP_BAD_REQUEST && response.status != HTTP_NOT_FOUND && response.status != HTTP_INTERNAL_SERVER_ERROR)
+    else if (response.status >= 400 && response.status != HTTPStatus::BAD_REQUEST && response.status != HTTPStatus::NOT_FOUND && response.status != HTTPStatus::INTERNAL_SERVER_ERROR)
         throw runtime_error(strprintf("server returned HTTP error %d", response.status));
     else if (response.body.empty())
         throw runtime_error("no response from server");

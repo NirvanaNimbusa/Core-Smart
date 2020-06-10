@@ -13,10 +13,9 @@
 #include <string.h>
 
 #include "univalue.h"
+#include "../utilstrencodings.h"
 
-namespace 
-{
-static bool ParsePrechecks(const std::string& str)
+bool ParsePrechecks(const std::string& str)
 {
     if (str.empty()) // No empty string allowed
         return false;
@@ -25,52 +24,6 @@ static bool ParsePrechecks(const std::string& str)
     if (str.size() != strlen(str.c_str())) // No embedded NUL characters allowed
         return false;
     return true;
-}
-
-bool ParseInt32(const std::string& str, int32_t *out)
-{
-    if (!ParsePrechecks(str))
-        return false;
-    char *endp = NULL;
-    errno = 0; // strtol will not set errno if valid
-    long int n = strtol(str.c_str(), &endp, 10);
-    if(out) *out = (int32_t)n;
-    // Note that strtol returns a *long int*, so even if strtol doesn't report a over/underflow
-    // we still have to check that the returned value is within the range of an *int32_t*. On 64-bit
-    // platforms the size of these types may be different.
-    return endp && *endp == 0 && !errno &&
-        n >= std::numeric_limits<int32_t>::min() &&
-        n <= std::numeric_limits<int32_t>::max();
-}
-
-bool ParseInt64(const std::string& str, int64_t *out)
-{
-    if (!ParsePrechecks(str))
-        return false;
-    char *endp = NULL;
-    errno = 0; // strtoll will not set errno if valid
-    long long int n = strtoll(str.c_str(), &endp, 10);
-    if(out) *out = (int64_t)n;
-    // Note that strtoll returns a *long long int*, so even if strtol doesn't report a over/underflow
-    // we still have to check that the returned value is within the range of an *int64_t*.
-    return endp && *endp == 0 && !errno &&
-        n >= std::numeric_limits<int64_t>::min() &&
-        n <= std::numeric_limits<int64_t>::max();
-}
-
-bool ParseDouble(const std::string& str, double *out)
-{
-    if (!ParsePrechecks(str))
-        return false;
-    if (str.size() >= 2 && str[0] == '0' && str[1] == 'x') // No hexadecimal floats allowed
-        return false;
-    std::istringstream text(str);
-    text.imbue(std::locale::classic());
-    double result;
-    text >> result;
-    if(out) *out = result;
-    return text.eof() && !text.fail();
-}
 }
 
 using namespace std;
@@ -121,7 +74,6 @@ bool UniValue::setNumStr(const string& val_)
 
 bool UniValue::setInt(uint64_t val)
 {
-    string s;
     ostringstream oss;
 
     oss << val;
@@ -131,7 +83,6 @@ bool UniValue::setInt(uint64_t val)
 
 bool UniValue::setInt(int64_t val)
 {
-    string s;
     ostringstream oss;
 
     oss << val;
@@ -341,6 +292,16 @@ double UniValue::get_real() const
     double retval;
     if (!ParseDouble(getValStr(), &retval))
         throw std::runtime_error("JSON double out of range");
+    return retval;
+}
+
+int64_t UniValue::get_amount() const
+{
+    if (typ != VNUM)
+        throw std::runtime_error("JSON value is not a number as expected");
+    int64_t retval;
+    if (!ParseFixedPoint(getValStr(), 8, &retval))
+        throw std::runtime_error("JSON amount invalid");
     return retval;
 }
 

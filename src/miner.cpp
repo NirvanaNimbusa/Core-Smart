@@ -184,15 +184,6 @@ CBlockTemplate* BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn, co
     unsigned int nBlockMinSize = GetArg("-blockminsize", 0);
     nBlockMinSize = std::min(nBlockMaxSize, nBlockMinSize);
 
-    unsigned int COUNT_SPEND_ZC_TX = 0;
-    unsigned int MAX_SPEND_ZC_TX_PER_BLOCK = 0;
-    // if(fTestNet || nHeight > OLD_LIMIT_SPEND_TXS){
-    //     MAX_SPEND_ZC_TX_PER_BLOCK = 1;
-    // }
-    // if(fTestNet || nHeight > SWITCH_TO_MORE_SPEND_TXS){
-    //     MAX_SPEND_ZC_TX_PER_BLOCK = 5;
-    // }
-
     // Collect memory pool transactions into the block
     CTxMemPool::setEntries inBlock;
     CTxMemPool::setEntries waitSet;
@@ -217,7 +208,7 @@ CBlockTemplate* BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn, co
         pblock->nTime = GetAdjustedTime();
         const int64_t nMedianTimePast = pindexPrev->GetMedianTimePast();
 
-        pblock->nVersion = 2;//ComputeBlockVersion(pindexPrev, chainparams.GetConsensus());
+        pblock->nVersion = CBlockHeader::CURRENT_VERSION;
         // -regtest only: allow overriding block.nVersion with
         // -blockversion=N to test forking scenarios
         if (chainparams.MineBlocksOnDemand())
@@ -321,11 +312,6 @@ CBlockTemplate* BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn, co
                 continue;
             }
 
-            if(nBlockTx >= nTxMaxCount && nTxMaxCount > 0){
-                LogPrintf("skip tx=%s, over the max tx count set\n", tx.GetHash().ToString());
-                continue;
-            }
-
             unsigned int nTxSigOps = iter->GetSigOpCount();
             LogPrintf("nTxSigOps=%s\n", nTxSigOps);
             LogPrintf("nBlockSigOps=%s\n", nBlockSigOps);
@@ -376,6 +362,11 @@ CBlockTemplate* BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn, co
                         waitSet.erase(child);
                     }
                 }
+            }
+
+            if(nBlockTx >= nTxMaxCount && nTxMaxCount > 0){
+                LogPrintf("skip tx=%s, over the max tx count set\n", tx.GetHash().ToString());
+                break;
             }
         }
 

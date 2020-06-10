@@ -38,20 +38,17 @@ struct BIP9Deployment {
  */
 struct Params {
     uint256 hashGenesisBlock;
-    int nSubsidyHalvingInterval;
+
     int nSmartnodePaymentsStartBlock;
     int nSmartnodePaymentsIncreaseBlock;
-    int nSmartnodePaymentsIncreasePeriod; // in blocks
-    int nInstantSendKeepLock; // in blocks
-    int nBudgetPaymentsStartBlock;
-    int nBudgetPaymentsCycleBlocks;
-    int nBudgetPaymentsWindowBlocks;
-    int nBudgetProposalEstablishingTime; // in seconds
-    int nSuperblockStartBlock;
-    int nSuperblockCycle; // in blocks
-    int nGovernanceMinQuorum; // Min absolute vote count to trigger an action
-    int nGovernanceFilterElements;
     int nSmartnodeMinimumConfirmations;
+    int nInstantSendKeepLock; // in blocks
+
+    int nProposalValidityVoteBlocks;
+    int nProposalFundingVoteBlocks;
+    int nVotingMinYesPercent; // Min percent of yes votes for a proposal to become funded
+    int nVotingFilterElements;
+
     /** Used to check majorities for block version upgrade */
     int nMajorityEnforceBlockUpgrade;
     int nMajorityRejectBlockOutdated;
@@ -76,6 +73,29 @@ struct Params {
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
     uint256 nMinimumChainWork;
     uint256 defaultAssumeValid;
+
+    /* SmartReward params */
+
+    //! Number of blocks required before a block gets processed into the smartrewards db
+    int nRewardsConfirmationsRequired;
+    //! Number of blocks per round with 1.2 rules
+    int nRewardsBlocksPerRound_1_2;
+    //! Number of blocks per round with 1.3 rules
+    int nRewardsBlocksPerRound_1_3;
+    //! Number of the first round with 1.3 rules
+    int nRewardsFirst_1_3_Round;
+    //! Number of blocks to wait until we start to pay the rewards after a cycles end.
+    int nRewardsPayoutStartDelay;
+    //! Number of blocks to wait between reward payout blocks for 1.2 rounds
+    int nRewardsPayouts_1_2_BlockInterval;
+    //! Number of payouts per rewardblock for 1.2 rounds
+    int nRewardsPayouts_1_2_BlockPayees;
+
+    //! 1.3 Parameter
+    int nRewardsPayouts_1_3_BlockStretch;
+    int nRewardsPayouts_1_3_BlockPayees;
+
+    std::string strRewardsGlobalVoteProofAddress;
 };
 } // namespace Consensus
 

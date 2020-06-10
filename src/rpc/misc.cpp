@@ -22,6 +22,7 @@
 #include "smarthive/hive.h"
 #include "smartnode/smartnodesync.h"
 #include "smartnode/spork.h"
+#include "smarthive/hive.h"
 
 #include <stdint.h>
 
@@ -31,6 +32,8 @@
 #include <univalue.h>
 
 using namespace std;
+
+extern UniValue UniValueFromAmount(int64_t nAmount);
 
 /**
  * @note Do not add or change anything in the information returned by this
@@ -57,6 +60,7 @@ UniValue getinfo(const UniValue& params, bool fHelp)
             "  \"protocolversion\": xxxxx,   (numeric) the protocol version\n"
             "  \"walletversion\": xxxxx,     (numeric) the wallet version\n"
             "  \"balance\": xxxxxxx,         (numeric) the total smartcash balance of the wallet\n"
+            "  \"headers\": xxxxxx,          (numeric) the current number of block headers in the server\n"
             "  \"blocks\": xxxxxx,           (numeric) the current number of blocks processed in the server\n"
             "  \"timeoffset\": xxxxx,        (numeric) the time offset\n"
             "  \"connections\": xxxxx,       (numeric) the number of connections\n"
@@ -93,6 +97,7 @@ UniValue getinfo(const UniValue& params, bool fHelp)
         obj.push_back(Pair("balance",       ValueFromAmount(pwalletMain->GetBalance())));
     }
 #endif
+    obj.push_back(Pair("headers",        (int) (pindexBestHeader ? pindexBestHeader->nHeight : 0)));
     obj.push_back(Pair("blocks",        (int)chainActive.Height()));
     obj.push_back(Pair("timeoffset",    GetTimeOffset()));
     obj.push_back(Pair("connections",   (int)g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL)));
@@ -382,6 +387,7 @@ UniValue snsync(const UniValue& params, bool fHelp)
         objStatus.push_back(Pair("IsSmartNodeSyncStarted", smartnodeSync.IsSmartNodeSyncStarted()));
         objStatus.push_back(Pair("IsSmartnodeListSynced", smartnodeSync.IsSmartnodeListSynced()));
         objStatus.push_back(Pair("IsWinnersListSynced", smartnodeSync.IsWinnersListSynced()));
+// WIP-VOTING uncomment ->  objStatus.push_back(Pair("IsProposalDataSynced", smartnodeSync.IsProposalDataSynced()));
         objStatus.push_back(Pair("IsSynced", smartnodeSync.IsSynced()));
         objStatus.push_back(Pair("IsFailed", smartnodeSync.IsFailed()));
         return objStatus;
@@ -616,11 +622,6 @@ bool getAddressesFromParams(const UniValue& params, std::vector<std::pair<uint16
     return true;
 }
 
-bool heightSort(std::pair<CAddressUnspentKey, CAddressUnspentValue> a,
-                std::pair<CAddressUnspentKey, CAddressUnspentValue> b) {
-    return a.second.blockHeight < b.second.blockHeight;
-}
-
 bool timestampSort(std::pair<CMempoolAddressDeltaKey, CMempoolAddressDelta> a,
                    std::pair<CMempoolAddressDeltaKey, CMempoolAddressDelta> b) {
     return a.second.time < b.second.time;
@@ -646,7 +647,7 @@ UniValue getaddressmempool(const UniValue& params, bool fHelp)
             "    \"address\"  (string) The base58check encoded address\n"
             "    \"txid\"  (string) The related txid\n"
             "    \"index\"  (number) The related input or output index\n"
-            "    \"satoshis\"  (number) The difference of duffs\n"
+            "    \"satoshis\"  (number) The difference of satoshis\n"
             "    \"timestamp\"  (number) The time the transaction entered the mempool (seconds)\n"
             "    \"prevtxid\"  (string) The previous txid (if spending)\n"
             "    \"prevout\"  (string) The previous transaction output index (if spending)\n"
@@ -718,7 +719,7 @@ UniValue getaddressutxos(const UniValue& params, bool fHelp)
             "    \"txid\"  (string) The output txid\n"
             "    \"outputIndex\"  (number) The output index\n"
             "    \"script\"  (string) The script hex encoded\n"
-            "    \"satoshis\"  (number) The number of duffs of the output\n"
+            "    \"satoshis\"  (number) The number of satoshis of the output\n"
             "    \"height\"  (number) The block height\n"
             "  }\n"
             "]\n"
@@ -741,8 +742,6 @@ UniValue getaddressutxos(const UniValue& params, bool fHelp)
         }
     }
 
-    std::sort(unspentOutputs.begin(), unspentOutputs.end(), heightSort);
-
     UniValue result(UniValue::VARR);
 
     for (std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> >::const_iterator it=unspentOutputs.begin(); it!=unspentOutputs.end(); it++) {
@@ -757,7 +756,7 @@ UniValue getaddressutxos(const UniValue& params, bool fHelp)
         output.push_back(Pair("outputIndex", (int)it->first.index));
         output.push_back(Pair("script", HexStr(it->second.script.begin(), it->second.script.end())));
         output.push_back(Pair("satoshis", it->second.satoshis));
-        output.push_back(Pair("height", it->second.blockHeight));
+        output.push_back(Pair("height", it->first.nBlockHeight));
         result.push_back(output);
     }
 
@@ -783,7 +782,7 @@ UniValue getaddressdeltas(const UniValue& params, bool fHelp)
             "\nResult:\n"
             "[\n"
             "  {\n"
-            "    \"satoshis\"  (number) The difference of duffs\n"
+            "    \"satoshis\"  (number) The difference of satoshis\n"
             "    \"txid\"  (string) The related txid\n"
             "    \"index\"  (number) The related input or output index\n"
             "    \"blockindex\"  (number) The related block index\n"
@@ -868,8 +867,8 @@ UniValue getaddressbalance(const UniValue& params, bool fHelp)
             "}\n"
             "\nResult:\n"
             "{\n"
-            "  \"balance\"  (string) The current balance in duffs\n"
-            "  \"received\"  (string) The total number of duffs received (including change)\n"
+            "  \"balance\"  (string) The current balance in satoshis\n"
+            "  \"received\"  (string) The total number of satoshis received (including change)\n"
             "}\n"
             "\nExamples:\n"
             + HelpExampleCli("getaddressbalance", "'{\"addresses\": [\"SwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg\"]}'")
@@ -1038,6 +1037,94 @@ UniValue getspentinfo(const UniValue& params, bool fHelp)
 
     return obj;
 }
+
+
+UniValue getaddresses(const UniValue& params, bool fHelp)
+{
+    if (fHelp || params.size() > 2)
+        throw runtime_error(
+            "getaddresses \"excludeZeroBalances\" \n"
+            "\nPrint a list of all addresses in the SmartCash blockchain.\n"
+            "\nArguments:\n"
+            "1. \"excludeZeroBalances\"  (bool, optional, default: true) If true, addresses with zero balance aren't included in the list. If false, they are.\n"
+            "1. \"blockHeight\"          (number, optional, default: current block height) The block height to generate the address list. 0 - blockHeight\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getaddresses", "true 100000")
+            + HelpExampleRpc("getaddresses", "true")
+        );
+
+    bool fExcludeZeroBalances = params.size() ? params[0].get_bool() : true;
+    int64_t nEndBlockHeight = params.size() > 1 ? params[1].get_int64() : -1;
+    std::vector<CAddressListEntry> addressList;
+
+    if (!GetAddresses(addressList, nEndBlockHeight, fExcludeZeroBalances)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Failed to load the address list.");
+    }
+
+    std::sort(addressList.begin(), addressList.end(),
+        [](const CAddressListEntry & a, const CAddressListEntry & b) -> bool
+    {
+        return a.balance > b.balance;
+    });
+
+    UniValue result(UniValue::VARR);
+
+    for (std::vector<CAddressListEntry>::const_iterator it=addressList.begin(); it!=addressList.end(); it++) {
+
+        std::string address;
+        if (!getAddressFromIndex(it->type, it->hashBytes, address)) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Unknown address type");
+        }
+
+        UniValue entry(UniValue::VOBJ);
+
+        entry.push_back(Pair("address", address));
+        entry.push_back(Pair("received", it->received));
+        entry.push_back(Pair("balance", it->balance));
+
+        result.push_back(entry);
+    }
+
+    return result;
+}
+
+UniValue getmoneysupply(const UniValue& params, bool fHelp)
+{
+    if (fHelp || params.size() )
+        throw runtime_error(
+            "getmoneysupply\n"
+            "\nPrint the current total money supply in the SmartCash blockchain.\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getmoneysupply", "")
+            + HelpExampleRpc("getmoneysupply", "")
+        );
+
+    std::vector<CAddressListEntry> addressList;
+
+    if (!GetAddresses(addressList, true)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Failed to load the address list.");
+    }
+
+    CAmount totalSupply = 0;
+
+    for (std::vector<CAddressListEntry>::const_iterator it=addressList.begin(); it!=addressList.end(); it++) {
+
+        CSmartAddress address;
+        if (it->type == 2) {
+            address = CSmartAddress(CScriptID(it->hashBytes));
+        } else if (it->type == 1) {
+            address = CSmartAddress(CKeyID(it->hashBytes));
+        } else {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Unknown address type");
+        }
+
+        totalSupply += it->balance;
+    }
+
+    return UniValueFromAmount(totalSupply);
+}
+
+
 
 UniValue getrandomkeypair(const UniValue& params, bool fHelp)
 {

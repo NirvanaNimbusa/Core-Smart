@@ -4,6 +4,7 @@
 
 #include "smartvotingmanager.h"
 #include "base58.h"
+#include "messagesigner.h"
 #include "util.h"
 #include "validation.h"
 #include "wallet/wallet.h"
@@ -15,12 +16,18 @@
 #include <QSslConfiguration>
 
 const QString urlHiveVotingPortal = "https://vote.smartcash.cc/api/v1/";
+const QString urlHiveVotingPortalTestnet = "https://testnet-vote.smrt.cash/api/v1/";
 
 SmartHiveRequest::SmartHiveRequest(QString endpoint):
     QNetworkRequest(),
     endpoint(endpoint)
 {
-    setUrl(QUrl(urlHiveVotingPortal + endpoint));
+    if(MainNet()){
+        setUrl(QUrl(urlHiveVotingPortal + endpoint));
+    }else{
+        setUrl(QUrl(urlHiveVotingPortalTestnet + endpoint));
+    }
+
     setHeader(QNetworkRequest::ContentTypeHeader,
                 "application/json");
 }
@@ -77,12 +84,9 @@ void SmartVotingManager::CreateVotes(const std::map<SmartProposal, SmartHiveVoti
                         LogPrint("smartvoting", "SmartVotingManager::Vote -- %s\n", errStr);
                     }else{
 
-                        CDataStream ss(SER_GETHASH, 0);
-                        ss << strMessageMagic;
-                        ss << proposal.first.getUrl().toStdString();
-
                         std::vector<unsigned char> vchSig;
-                        if (!key.SignCompact(Hash(ss.begin(), ss.end()), vchSig)){
+
+                        if (!CMessageSigner::SignMessage(proposal.first.getUrl().toStdString(),vchSig,key)){
                             std::string errStr = strprintf("Sign failed for address %s\n",address);
                             result += errStr;
                             LogPrint("smartvoting", "SmartVotingManager::Vote -- %s\n", errStr);

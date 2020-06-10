@@ -48,8 +48,13 @@ int SmartNodePayments::PayoutsPerBlock(int nHeight)
 
     }else{
 
-        if(nHeight >= TESTNET_V1_2_8_PAYMENTS_HEIGHT)
+
+        if(nHeight >= TESTNET_V1_2_8_PAYMENTS_HEIGHT && nHeight < TESTNET_V1_3_HEIGHT)
             return TESTNET_V1_2_8_NODES_PER_BLOCK;
+        if(nHeight >= TESTNET_V1_3_HEIGHT)
+            return TESTNET_V1_3_NODES_PER_BLOCK;
+
+
     }
 
     return 0;
@@ -67,8 +72,12 @@ int SmartNodePayments::PayoutInterval(int nHeight)
 
     }else{
 
-        if(nHeight >= TESTNET_V1_2_8_PAYMENTS_HEIGHT)
+
+        if(nHeight >= TESTNET_V1_2_8_PAYMENTS_HEIGHT && nHeight < TESTNET_V1_3_HEIGHT)
             return TESTNET_V1_2_8_NODES_BLOCK_INTERVAL;
+        if(nHeight >= TESTNET_V1_3_HEIGHT)
+            return TESTNET_V1_3_NODES_BLOCK_INTERVAL;
+
 
     }
 
@@ -225,6 +234,8 @@ bool CSmartnodePayments::UpdateLastVote(const CSmartnodePaymentVote& vote)
 void CSmartnodePayments::FillBlockPayee(CMutableTransaction& txNew, int nHeight, CAmount blockReward, std::vector<CTxOut>& vxoutSmartNodes)
 {
     vxoutSmartNodes.clear();
+
+    if( mnodeman.size() < MIN_ACTIVE_SMARTNODES ) return;
 
     if( MainNet() ){
 

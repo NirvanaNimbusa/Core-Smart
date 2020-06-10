@@ -307,6 +307,7 @@ static const CRPCCommand vRPCCommands[] =
     { "blockchain",         "gettxoutsetinfo",        &gettxoutsetinfo,        true  },
     { "blockchain",         "verifychain",            &verifychain,            true  },
     { "blockchain",         "getspentinfo",           &getspentinfo,           false },
+    { "blockchain",         "getchaintxstats",        &getchaintxstats,        false },
 
     /* Mining */
     { "mining",             "getblocktemplate",       &getblocktemplate,       true  },
@@ -322,6 +323,7 @@ static const CRPCCommand vRPCCommands[] =
 
     /* Raw transactions */
     { "rawtransactions",    "createrawtransaction",   &createrawtransaction,   true  },
+    { "rawtransactions",    "splitinputs",            &splitinputs,            true  },
     { "rawtransactions",    "decoderawtransaction",   &decoderawtransaction,   true  },
     { "rawtransactions",    "decodescript",           &decodescript,           true  },
     { "rawtransactions",    "getrawtransaction",      &getrawtransaction,      true  },
@@ -337,6 +339,8 @@ static const CRPCCommand vRPCCommands[] =
     { "addressindex",       "getaddressdeltas",       &getaddressdeltas,       false },
     { "addressindex",       "getaddresstxids",        &getaddresstxids,        false },
     { "addressindex",       "getaddressbalance",      &getaddressbalance,      false },
+    { "addressindex",       "getaddresses",           &getaddresses,           false },
+    { "addressindex",       "getmoneysupply",         &getmoneysupply,         false },
 
     /* Utility functions */
     { "util",               "createmultisig",         &createmultisig,         true  },
@@ -360,18 +364,15 @@ static const CRPCCommand vRPCCommands[] =
     { "smartcash",               "smartnode",             &smartnode,             true  },
     { "smartcash",               "smartnodelist",         &smartnodelist,         true  },
     { "smartcash",               "smartnodebroadcast",    &smartnodebroadcast,    true  },
-    //{ "smartcash",               "gobject",                &gobject,                true  },
-    //{ "smartcash",               "getgovernanceinfo",      &getgovernanceinfo,      true  },
-    //{ "smartcash",               "getsuperblockbudget",    &getsuperblockbudget,    true  },
-    //{ "smartcash",               "voteraw",                &voteraw,                true  },
+  /* WIP-VOTING uncomment
+    { "smartcash",               "smartvoting",           &smartvoting,           true  },
+    { "smartcash",               "votekeys",              &votekeys,              true  },
+  */
     { "smartcash",               "snsync",                 &snsync,                 true  },
     { "smartcash",               "spork",                  &spork,                  true  },
-    //{ "smartcash",               "getpoolinfo",            &getpoolinfo,            true  },
-    //{ "smartcash",               "sentinelping",           &sentinelping,           true  },
     { "smartcash",               "smartrewards",           &smartrewards,           true  },
     { "smartcash",               "smartmining",            &smartmining,            true  },
 #ifdef ENABLE_WALLET
-    //{ "smartcash",               "privatesend",            &privatesend,            false },
 
     /* Wallet */
     //{ "wallet",             "keepass",                &keepass,                true },
@@ -384,11 +385,10 @@ static const CRPCCommand vRPCCommands[] =
     { "wallet",             "encryptwallet",          &encryptwallet,          true  },
     { "wallet",             "getaccountaddress",      &getaccountaddress,      true  },
     { "wallet",             "getaccount",             &getaccount,             true  },
+    { "wallet",             "getaddress",             &getaddress,             true  },
     { "wallet",             "getaddressesbyaccount",  &getaddressesbyaccount,  true  },
     { "wallet",             "getbalance",             &getbalance,             false },
     { "wallet",             "getnewaddress",          &getnewaddress,          true  },
-//    { "wallet",             "getdummybalance",        &getdummybalance,        true  },
-//    { "wallet",             "setdummybalance",        &setdummybalance,        true  },
     { "wallet",             "getrawchangeaddress",    &getrawchangeaddress,    true  },
     { "wallet",             "getreceivedbyaccount",   &getreceivedbyaccount,   false },
     { "wallet",             "getreceivedbyaddress",   &getreceivedbyaddress,   false },
@@ -415,12 +415,14 @@ static const CRPCCommand vRPCCommands[] =
     { "wallet",             "sendfrom",               &sendfrom,               false },
     { "wallet",             "sendmany",               &sendmany,               false },
     { "wallet",             "sendtoaddress",          &sendtoaddress,          false },
+    { "wallet",             "sendtoaddresslocked",    &sendtoaddresslocked,    false },
     { "wallet",             "setaccount",             &setaccount,             true  },
     { "wallet",             "settxfee",               &settxfee,               true  },
     { "wallet",             "signmessage",            &signmessage,            true  },
     { "wallet",             "walletlock",             &walletlock,             true  },
     { "wallet",             "walletpassphrasechange", &walletpassphrasechange, true  },
     { "wallet",             "walletpassphrase",       &walletpassphrase,       true  },
+
 #endif // ENABLE_WALLET
 };
 

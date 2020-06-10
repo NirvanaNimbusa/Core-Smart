@@ -10,10 +10,17 @@
 #include "script/script.h"
 #include "serialize.h"
 #include "uint256.h"
+#include "smartvoting/votekeys.h"
 
 static const int SERIALIZE_TRANSACTION_NO_WITNESS = 0x40000000;
 
+// Constants for vote proof transactions
+static const CAmount REWARDS_ACTIVATION_FEE = 0 * COIN;
+static const CAmount REWARDS_ACTIVATION_TX_FEE = 0.001 * COIN;
+
 static const int WITNESS_SCALE_FACTOR = 4;
+
+
 /** An outpoint - a combination of a transaction hash and an index n into its vout */
 class COutPoint
 {
@@ -24,7 +31,7 @@ public:
     COutPoint() { SetNull(); }
     COutPoint(uint256 hashIn, uint32_t nIn) { hash = hashIn; n = nIn; }
 
-    ADD_SERIALIZE_METHODS;
+    ADD_SERIALIZE_METHODS
 
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
@@ -212,6 +219,13 @@ public:
     //  return (nValue < GetDustThreshold(minRelayTxFee));
         return false;
     }
+
+    bool IsVoteKeyRegistrationData() const
+    {
+        return scriptPubKey.IsVoteKeyData() && nValue == VOTEKEY_REGISTER_FEE;
+    }
+
+    uint32_t GetLockTime() const;
 
     friend bool operator==(const CTxOut& a, const CTxOut& b)
     {
@@ -449,6 +463,9 @@ public:
 
     bool IsZerocoinMint(const CTransaction& tx) const;
 
+    bool IsVoteKeyRegistration() const;
+    bool IsActivationTx() const;
+
     friend bool operator==(const CTransaction& a, const CTransaction& b)
     {
         return a.hash == b.hash;
@@ -499,6 +516,10 @@ struct CMutableTransaction
         return !(a == b); 
     } 
 };
+
+typedef std::shared_ptr<const CTransaction> CTransactionRef;
+static inline CTransactionRef MakeTransactionRef() { return std::make_shared<const CTransaction>(); }
+template <typename Tx> static inline CTransactionRef MakeTransactionRef(Tx&& txIn) { return std::make_shared<const CTransaction>(std::forward<Tx>(txIn)); }
 
 /** Compute the weight of a transaction, as defined by BIP 141 */
 int64_t GetTransactionWeight(const CTransaction &tx);

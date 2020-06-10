@@ -7,6 +7,8 @@
 
 #include "tinyformat.h"
 #include "utilstrencodings.h"
+#include "primitives/transaction.h"
+#include "smartvoting/votekeys.h"
 
 using namespace std;
 
@@ -216,6 +218,35 @@ bool CScript::IsPayToPublicKeyHash() const
             (*this)[24] == OP_CHECKSIG);
 }
 
+bool CScript::IsPayToPublicKeyHashLocked() const
+{
+    // Extra-fast test for pay-to-pubkey-hash CScripts with OP_CHECKLOCKTIMEVERIFY:
+
+    if( this->size() < 29 || this->size() > 33){
+        return false;
+    }
+
+    int nLockTimeLength = (*this)[0];
+    int nOffset = nLockTimeLength + 1;
+
+    return (nLockTimeLength >= 1 && nLockTimeLength <= 5 &&
+            (*this)[nOffset + 0] == OP_CHECKLOCKTIMEVERIFY &&
+            (*this)[nOffset + 1] == OP_DROP &&
+            (*this)[nOffset + 2] == OP_DUP &&
+            (*this)[nOffset + 3] == OP_HASH160 &&
+            (*this)[nOffset + 4] == 0x14 &&
+            (*this)[nOffset + 25] == OP_EQUALVERIFY &&
+            (*this)[nOffset + 26] == OP_CHECKSIG);
+}
+
+bool CScript::IsPayToPublicKey() const
+{
+    // Extra-fast test for pay-to-pubkey CScripts:
+    return (this->size() == 35 &&
+            (*this)[0] == 0x21 &&
+            (*this)[34] == OP_CHECKSIG);
+}
+
 bool CScript::IsNormalPaymentScript() const 
 { 
     if(this->size() != 25) return false; 
@@ -247,6 +278,25 @@ bool CScript::IsPayToScriptHash() const
             (*this)[0] == OP_HASH160 &&
             (*this)[1] == 0x14 &&
             (*this)[22] == OP_EQUAL);
+}
+
+bool CScript::IsPayToScriptHashLocked() const
+{
+    // Extra-fast test for pay-to-script-hash CScripts with OP_CHECKLOCKTIMEVERIFY:
+
+    if( this->size() < 26 || this->size() > 31){
+        return false;
+    }
+
+    int nLockTimeLength = (*this)[0];
+    int nOffset = nLockTimeLength + 1;
+
+    return (nLockTimeLength >= 1 && nLockTimeLength <= 5 &&
+            (*this)[nOffset + 0] == OP_CHECKLOCKTIMEVERIFY &&
+            (*this)[nOffset + 1] == OP_DROP &&
+            (*this)[nOffset + 2] == OP_HASH160 &&
+            (*this)[nOffset + 3] == 0x14 &&
+            (*this)[nOffset + 24] == OP_EQUAL);
 }
 
 bool CScript::IsPayToWitnessScriptHash() const
@@ -285,6 +335,22 @@ bool CScript::IsZerocoinMint() const
 bool CScript::IsZerocoinSpend() const {
     return (this->size() > 0 &&
             (*this)[0] == OP_ZEROCOINSPEND);
+}
+
+bool CScript::IsVoteKeyData() const {
+    return  (this->size() == VOTEKEY_REGISTRATION_O1_SCRIPT_SIZE &&
+            (*this)[0] == OP_RETURN &&
+            (*this)[1] == OP_PUSHDATA1 &&
+            (*this)[2] == VOTEKEY_REGISTRATION_O1_DATA_SIZE &&
+            (*this)[3] == OP_RETURN_VOTE_KEY_REG_FLAG &&
+            (*this)[4] == 0x01) ||
+
+            (this->size() == VOTEKEY_REGISTRATION_O2_SCRIPT_SIZE &&
+            (*this)[0] == OP_RETURN &&
+            (*this)[1] == OP_PUSHDATA1 &&
+            (*this)[2] == VOTEKEY_REGISTRATION_O2_DATA_SIZE &&
+            (*this)[3] == OP_RETURN_VOTE_KEY_REG_FLAG &&
+            (*this)[4] == 0x02);
 }
 
 bool CScript::HasCanonicalPushes() const

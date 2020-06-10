@@ -14,6 +14,7 @@
 #include "config/bitcoin-config.h"
 #endif
 
+#include "amount.h"
 #include "compat.h"
 #include "tinyformat.h"
 #include "utiltime.h"
@@ -55,6 +56,7 @@ extern bool fSmartNode;
 extern bool fLiteMode; 
 extern int nWalletBackups; 
 
+extern const std::vector<std::string> args;
 extern std::map<std::string, std::string> mapArgs;
 extern std::map<std::string, std::vector<std::string> > mapMultiArgs;
 extern bool fDebug;
@@ -90,6 +92,10 @@ inline int roundint(double d)
 inline int64_t roundint64(double d)
 {
     return (int64_t)(d > 0 ? d + 0.5 : d - 0.5);
+}
+
+inline double CAmountToDouble(CAmount nAmount){
+     return nAmount / COIN + ( double(nAmount % COIN) / COIN );
 }
 
 void SetupEnvironment();
@@ -133,6 +139,7 @@ static inline bool error(const char* s)
 }
 
 void PrintExceptionContinue(const std::exception *pex, const char* pszThread);
+bool CheckDaemonParameters();
 void ParseParameters(int argc, const char*const argv[]);
 void FileCommit(FILE *fileout);
 bool TruncateFile(FILE *file, unsigned int length);

@@ -14,6 +14,7 @@
 #include "receiverequestdialog.h"
 #include "recentrequeststablemodel.h"
 #include "walletmodel.h"
+#include "validation.h"
 
 #include <QAction>
 #include <QCursor>
@@ -149,11 +150,18 @@ void ReceiveCoinsDialog::on_receiveButton_clicked()
         }
     } else {
         /* Generate new receiving address */
-        address = model->getAddressTableModel()->addRow(AddressTableModel::Receive, label, "");
+        QString receive;
+        if(ui->checkUseNewAddressFormat->isChecked()){
+          receive = AddressTableModel::ReceiveNew;
+        }else{
+          receive = AddressTableModel::Receive;
+        }
+        address = model->getAddressTableModel()->addRow(receive, label, "", ui->timeLockSettings->getLockTime());
     }
     SendCoinsRecipient info(address, label,
         ui->reqAmount->value(), ui->reqMessage->text());
     info.fUseInstantSend = ui->checkUseInstantSend->isChecked();
+    info.fUseNewAddressFormat = ui->checkUseNewAddressFormat->isChecked();
     ReceiveRequestDialog *dialog = new ReceiveRequestDialog(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setModel(model->getOptionsModel());
@@ -271,3 +279,4 @@ void ReceiveCoinsDialog::copyAmount()
 {
     copyColumnToClipboard(RecentRequestsTableModel::Amount);
 }
+

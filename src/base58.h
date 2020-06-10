@@ -24,6 +24,11 @@
 #include <string>
 #include <vector>
 
+//! Default for -usenewaddressformat
+static const bool DEFAULT_USE_NEW_ADDRESS_FORMAT = false;
+
+extern bool fUseNewAddressFormat;
+
 /**
  * Encode a byte sequence as a base58-encoded string.
  * pbegin and pend cannot be NULL, unless both are.
@@ -52,18 +57,21 @@ bool DecodeBase58(const std::string& str, std::vector<unsigned char>& vchRet);
  * Encode a byte vector into a base58-encoded string, including checksum
  */
 std::string EncodeBase58Check(const std::vector<unsigned char>& vchIn);
+std::string EncodeBase58CheckNew(const std::vector<unsigned char>& vchIn);
 
 /**
  * Decode a base58-encoded string (psz) that includes a checksum into a byte
  * vector (vchRet), return true if decoding is successful
  */
 inline bool DecodeBase58Check(const char* psz, std::vector<unsigned char>& vchRet);
+inline bool DecodeBase58CheckNew(const char* psz, std::vector<unsigned char>& vchRet);
 
 /**
  * Decode a base58-encoded string (str) that includes a checksum into a byte
  * vector (vchRet), return true if decoding is successful
  */
 inline bool DecodeBase58Check(const std::string& str, std::vector<unsigned char>& vchRet);
+inline bool DecodeBase58CheckNew(const std::string& str, std::vector<unsigned char>& vchRet);
 
 /**
  * Base class for all base58-encoded data
@@ -86,6 +94,7 @@ public:
     bool SetString(const char* psz, unsigned int nVersionBytes = 1);
     bool SetString(const std::string& str);
     std::string ToString() const;
+    std::string ToString(bool fNewFormat) const;
     int CompareTo(const CBase58Data& b58) const;
 
     bool operator==(const CBase58Data& b58) const { return CompareTo(b58) == 0; }
@@ -108,6 +117,7 @@ public:
     bool Set(const CTxDestination &dest);
     bool IsValid() const;
     bool IsValid(const CChainParams &params) const;
+    bool IsValid(const CChainParams::Base58Type& type) const;
 
     CBitcoinAddress() {}
     CBitcoinAddress(const CTxDestination &dest) { Set(dest); }
@@ -134,6 +144,58 @@ public:
 
     CBitcoinSecret(const CKey& vchSecret) { SetKey(vchSecret); }
     CBitcoinSecret() {}
+};
+
+
+/** base58-encoded public vote key.
+ */
+class CVoteKey : public CBase58Data {
+public:
+    bool Set(const CKeyID &id);
+    bool Set(const CScriptID &id);
+    bool Set(const CTxDestination &dest);
+    bool IsValid() const;
+    bool IsValid(const CChainParams &params) const;
+
+    CVoteKey() {}
+    CVoteKey(const CKeyID &dest) { Set(dest); }
+    CVoteKey(const std::string& strAddress) { SetString(strAddress); }
+
+    CTxDestination Get() const;
+    bool GetKeyID(CKeyID &keyID) const;
+
+    ADD_SERIALIZE_METHODS
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
+        READWRITE(vchVersion);
+        READWRITE(vchData);
+    }
+};
+
+/**
+ * A base58-encoded vote key secret
+ */
+class CVoteKeySecret : public CBase58Data
+{
+public:
+    void SetKey(const CKey& vchSecret);
+    CKey GetKey() const;
+    bool IsValid() const;
+    bool SetString(const char* pszSecret);
+    bool SetString(const std::string& strSecret);
+
+    CVoteKeySecret(const CKey& vchSecret) { SetKey(vchSecret); }
+    CVoteKeySecret() {}
+    void SetKey(const std::vector<unsigned char> prefix, const CKey &vchSecret);
+
+    ADD_SERIALIZE_METHODS
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
+        READWRITE(vchVersion);
+        READWRITE(vchData);
+    }
 };
 
 template<typename K, int Size, CChainParams::Base58Type Type> class CBitcoinExtKeyBase : public CBase58Data

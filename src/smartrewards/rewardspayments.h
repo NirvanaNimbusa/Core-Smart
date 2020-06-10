@@ -12,20 +12,7 @@
 #include "coins.h"
 #include "base58.h"
 
-
-//! Number of blocks to wait until we start to pay the rewards after a cycles end.
-static const int64_t nRewardPayoutStartDelay = 200;
-//! Number of blocks to wait between reward payout blocks
-static const int64_t nRewardPayoutBlockInterval = 2;
-//! Number of payouts per rewardblock
-static const int64_t nRewardPayoutsPerBlock = 1000;
-
-//! Testnet parameter
-static const int64_t nRewardPayoutStartDelay_Testnet = 100;
-static const int64_t nRewardPayoutsPerBlock_1_Testnet = 500;
-static const int64_t nRewardPayoutBlockInterval_1_Testnet = 5;
-static const int64_t nRewardPayoutsPerBlock_2_Testnet = 1000;
-static const int64_t nRewardPayoutBlockInterval_2_Testnet = 2;
+struct CSmartRewardsRoundResult;
 
 namespace SmartRewardPayments{
 
@@ -34,10 +21,12 @@ typedef enum{
     DatabaseError,
     NotSynced,
     NoRewardBlock,
-    InvalidRewardList
+    InvalidRewardList,
+    CoreError
 } Result;
 
-CSmartRewardSnapshotList GetPaymentsForBlock(const int nHeight, int64_t blockTime, SmartRewardPayments::Result &result);
+CSmartRewardResultEntryPtrList GetPayments(const CSmartRewardsRoundResult *pResult, const int64_t nPayoutDelay, const int nHeight, int64_t blockTime, SmartRewardPayments::Result &result);
+CSmartRewardResultEntryPtrList GetPaymentsForBlock(const int nHeight, int64_t blockTime, SmartRewardPayments::Result &result);
 SmartRewardPayments::Result Validate(const CBlock& block, const int nHeight, CAmount& smartReward);
 void FillPayments(CMutableTransaction& txNew, int nHeight, int64_t prevBlockTime, std::vector<CTxOut>& voutSmartRewards);
 

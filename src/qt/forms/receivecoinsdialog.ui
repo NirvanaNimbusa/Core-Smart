@@ -170,9 +170,22 @@
            </widget>
           </item>
           <item>
+           <widget class="TimeLockSettingsWidget" name="timeLockSettings" native="true" />
+          </item>
+          <item>
            <widget class="QCheckBox" name="checkUseInstantSend">
             <property name="text">
              <string>Request InstantPay</string>
+            </property>
+            <property name="checked">
+             <bool>false</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="checkUseNewAddressFormat">
+            <property name="text">
+             <string>Use New Address Format</string>
             </property>
             <property name="checked">
              <bool>false</bool>

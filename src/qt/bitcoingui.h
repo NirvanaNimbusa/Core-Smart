@@ -18,6 +18,7 @@
 #include <QPoint>
 #include <QSystemTrayIcon>
 
+class AddressConverter;
 class ClientModel;
 class NetworkStyle;
 class Notificator;
@@ -108,23 +109,24 @@ private:
     QAction *optionsAction;
     QAction *toggleHideAction;
     QAction *encryptWalletAction;
+    QAction *encryptVotingAction;
     QAction *backupWalletAction;
     QAction *changePassphraseAction;
+    QAction *changeVotingPassphraseAction;
     QAction *aboutQtAction;
     QAction *smartnodeAction;
     QAction *smartrewardsAction;
     QAction *smartvotingAction;
     QAction *openRPCConsoleAction;
+    QAction *openAddressConverterAction;
     QAction *openAction;
     QAction *showHelpMessageAction;
-    //QAction *zerocoinAction;
-    //QAction *zerocoinMenuAction;
-
 
     QSystemTrayIcon *trayIcon;
     QMenu *trayIconMenu;
     Notificator *notificator;
     RPCConsole *rpcConsole;
+    AddressConverter *addressConverter;
     HelpMessageDialog *helpMessageDialog;
     ModalOverlay *modalOverlay;
 
@@ -196,6 +198,8 @@ public Q_SLOTS:
     */
     void setEncryptionStatus(int status);
 
+    void setVotingEncryptionStatus(int status);
+
     bool handlePaymentRequest(const SendCoinsRecipient& recipient);
 
     /** Show incoming transaction notification for new transactions. */
@@ -218,8 +222,6 @@ private Q_SLOTS:
     void gotoReceiveCoinsPage();
     /** Switch to send coins page */
     void gotoSendCoinsPage(QString addr = "");
-    /** Switch to zerocoin page */
-    //void gotoZerocoinPage();
 
     /** Show Sign/Verify Message dialog and switch to sign message tab */
     void gotoSignMessageTab(QString addr = "");
@@ -235,6 +237,8 @@ private Q_SLOTS:
     void aboutClicked();
     /** Show debug window */
     void showDebugWindow();
+    /** Show address converter dialog */
+    void showAddressConverter();
     /** Show debug window and set focus to the console */
     void showDebugWindowActivateConsole();
     /** Show help message dialog */
@@ -293,5 +297,12 @@ private Q_SLOTS:
     /** Tells underlying optionsModel to update its current display unit. */
     void onMenuSelection(QAction* action);
 };
+
+extern void showErrorDialog(QWidget *parent, std::string &strError);
+extern void showErrorDialog(QWidget *parent, QString strError);
+
+inline bool char_isspace(char c) {
+    return std::isspace(static_cast<unsigned char>(c));
+}
 
 #endif // BITCOIN_QT_BITCOINGUI_H

@@ -162,7 +162,7 @@ static bool CheckSignature(const CBlock &block, const CBlockIndex *pindex)
 
     // Check if it is an OP_RETURN and if the startvalue is OP_DATA_MINING_FLAG
     if( sigScript.size() > nMiningSignatureMinScriptLength &&
-        sigScript[0] == OP_RETURN && sigScript[2] == OP_DATA_MINING_FLAG ){
+        sigScript[0] == OP_RETURN && sigScript[2] == OP_RETURN_MINING_FLAG ){
 
         LOCK(cs_miningkeys);
 
@@ -220,7 +220,12 @@ static bool CheckSignature(const CBlock &block, const CBlockIndex *pindex)
 
 CAmount GetMiningReward(CBlockIndex * pindex, CAmount blockReward)
 {
+    if( pindex->nHeight < HF_V1_3_HEIGHT ){ 
     return blockReward / 20; // 5%
+    }
+    else {
+    return blockReward / 100; // 1%
+    }
 }
 
 void SmartMining::FillPayment(CMutableTransaction& coinbaseTx, int nHeight, CBlockIndex * pindexPrev, CAmount blockReward, CTxOut &outSignature, const CSmartAddress &signingAddress)
@@ -285,7 +290,7 @@ void SmartMining::FillPayment(CMutableTransaction& coinbaseTx, int nHeight, CBlo
         }
 
         std::vector<unsigned char> vSigData = {
-            OP_DATA_MINING_FLAG,
+            OP_RETURN_MINING_FLAG,
             searchAddress->first
         };
 
@@ -334,7 +339,9 @@ bool SmartMining::Validate(const CBlock &block, CBlockIndex *pindex, CValidation
     CAmount expectedCoinbase = nFees + nodeReward + hiveReward + smartReward + miningReward;
 
     if( pindex->nHeight > 1 && coinbase > expectedCoinbase ){
-         LogPrintf("SmartMining::Validate - Coinbase too high Expected: %d.%08d! %s\n", expectedCoinbase / COIN, expectedCoinbase % COIN, block.vtx[0].ToString());
+         LogPrintf("SmartMining::Validate - Coinbase %d.%08d!\n", coinbase / COIN, coinbase % COIN);
+         LogPrintf("SmartMining::Validate - Expected Coinbase %d.%08d!\n", expectedCoinbase / COIN, expectedCoinbase % COIN);
+         LogPrintf("SmartMining::Validate - Coinbase higher than Expected: %d.%08d! %s\n", expectedCoinbase / COIN, expectedCoinbase % COIN, block.vtx[0].ToString());
         return state.DoS(100, false, REJECT_INVALID,
                      "CTransaction::CheckTransaction() : Coinbase value too high");
     }

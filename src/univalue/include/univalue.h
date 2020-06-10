@@ -16,6 +16,8 @@
 #include <sstream>        // .get_int64()
 #include <utility>        // std::pair
 
+bool ParsePrechecks(const std::string& str);
+
 class UniValue {
 public:
     enum VType { VNULL, VOBJ, VARR, VSTR, VNUM, VBOOL, };
@@ -149,6 +151,7 @@ public:
     int get_int() const;
     int64_t get_int64() const;
     double get_real() const;
+    int64_t get_amount() const;
     const UniValue& get_obj() const;
     const UniValue& get_array() const;
 

@@ -110,20 +110,45 @@ UniValue getnewaddress(const UniValue& params, bool fHelp)
     if (!EnsureWalletIsAvailable(fHelp))
         return NullUniValue;
 
-    if (fHelp || params.size() > 1)
-        throw runtime_error(
-            "getnewaddress ( \"account\" )\n"
+    bool fBIP65Enabled = IsSuperMajority(4, chainActive.Tip(), Params().GetConsensus().nMajorityEnforceBlockUpgrade,
+        Params().GetConsensus());
+
+    if (fHelp || params.size() > 2)
+    {
+        std::string errorMsg =
+            "getnewaddress ( \"account\" locktime)\n"
             "\nReturns a new SmartCash address for receiving payments.\n"
             "If 'account' is specified (DEPRECATED), it is added to the address book \n"
             "so payments received with the address will be credited to 'account'.\n"
             "\nArguments:\n"
-            "1. \"account\"        (string, optional) DEPRECATED. The account name for the address to be linked to. If not provided, the default account \"\" is used. It can also be set to the empty string \"\" to represent the default account. The account does not need to exist, it will be created if there is no account by the given name.\n"
-            "\nResult:\n"
-            "\"smartcashaddress\"    (string) The new smartcash address\n"
+            "1. \"account\"        (string, optional) DEPRECATED. The account name for the address to be linked to. If not provided, the default account \"\" is used. It can also be set to the empty string \"\" to represent the default account. The account does not need to exist, it will be created if there is no account by the given name.\n";
+
+        if (fBIP65Enabled)
+        {
+            errorMsg +=
+                "2. locktime           (numeric, optional, default=0) Locktime. Non-0 value locks the address to be spendable until after a locking period. If locktime is less than 500000000, then it is processed as the block height at which the address becomes spendable. If locktime is greater than 500000000 then it is processed as a UNIX timestamp after which the coins attached to the address can be spent."
+                "\nResult:\n"
+                "{\n"
+                "  \"address\":\"address\",    (string) The new SmartCash address\n"
+                "  \"redeemScript\":\"hex\",  (string) The hex encoded redeem script if locktime was set\n"
+                "}\n";
+        }
+        else
+        {
+            errorMsg +=
+                "\nResult:\n"
+                "{\n"
+                "  \"address\":\"address\",    (string) The new SmartCash address\n"
+                "}\n";
+        }
+
+        errorMsg +=
             "\nExamples:\n"
             + HelpExampleCli("getnewaddress", "")
-            + HelpExampleRpc("getnewaddress", "")
-        );
+            + HelpExampleRpc("getnewaddress", "");
+
+        throw runtime_error(errorMsg);
+    }
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
 
@@ -131,6 +156,10 @@ UniValue getnewaddress(const UniValue& params, bool fHelp)
     string strAccount;
     if (params.size() > 0)
         strAccount = AccountFromValue(params[0]);
+
+    int nLockTime = 0;
+    if (fBIP65Enabled && (params.size() > 1))
+        nLockTime = params[1].get_int();
 
     if (!pwalletMain->IsLocked(true))
         pwalletMain->TopUpKeyPool();
@@ -140,12 +169,59 @@ UniValue getnewaddress(const UniValue& params, bool fHelp)
     if (!pwalletMain->GetKeyFromPool(newKey, false))
         throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
     CKeyID keyID = newKey.GetID();
+    UniValue obj(UniValue::VOBJ);
 
-    pwalletMain->SetAddressBook(keyID, strAccount, "receive");
+    if (nLockTime > 0) {
+        CScript redeemScript = GetLockedScriptForDestination(keyID, nLockTime);
+        CScriptID scriptHash(redeemScript);
+        pwalletMain->AddCScript(redeemScript);
+        pwalletMain->SetAddressBook(scriptHash, strAccount, "receive");
+        obj.push_back(Pair("address", CBitcoinAddress(scriptHash).ToString()));
+        obj.push_back(Pair("redeemScript", HexStr(redeemScript.begin(), redeemScript.end())));
+    } else {
+        pwalletMain->SetAddressBook(keyID, strAccount, "receive");
+        obj.push_back(Pair("address", CBitcoinAddress(keyID).ToString()));
+    }
 
-    return CBitcoinAddress(keyID).ToString();
+    return obj;
 }
 
+UniValue getaddress(const UniValue& params, bool fHelp)
+{
+    if (!EnsureWalletIsAvailable(fHelp))
+        return NullUniValue;
+
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "getaddress ( \"smartcashaddress\" )\n"
+            "\nReturns a SmartCash in legacy and new format for receiving payments.\n"
+            "\nArguments:\n"
+            "1. \"smartcashaddress\"        (string) SmartCash address. Legacy or new format could be used"
+            "\nResult:\n"
+            "[                     (json array of string)\n"
+            "  \"legacy\": xxxxx,     (string) SmartCash address in legacy format\n"
+            "  \"newformat\": xxxxxxx,(string) SmartCash address in new format\n"
+            "]\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getaddress", "SXun9XDHLdBhG4Yd1ueZfLfRpC9kZgwT1b")
+            + HelpExampleRpc("getaddress", "SXun9XDHLdBhG4Yd1ueZfLfRpC9kZgwT1b")
+        );
+
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+
+    // Parse the account first so we don't generate a key if there's an error
+    string strAddress;
+    if (params.size() > 0)
+        strAddress = params[0].get_str();
+
+    CBitcoinAddress address(strAddress);
+
+    UniValue obj(UniValue::VOBJ);
+    obj.push_back(Pair("legacy", address.ToString(false)));
+    obj.push_back(Pair("newformat", address.ToString(true)));
+
+    return obj;
+}
 
 CBitcoinAddress GetAccountAddress(string strAccount, bool bForceNew=false)
 {
@@ -192,11 +268,11 @@ UniValue getaccountaddress(const UniValue& params, bool fHelp)
     if (fHelp || params.size() != 1)
         throw runtime_error(
             "getaccountaddress \"account\"\n"
-            "\nDEPRECATED. Returns the current smartcash address for receiving payments to this account.\n"
+            "\nDEPRECATED. Returns the current SmartCash address for receiving payments to this account.\n"
             "\nArguments:\n"
             "1. \"account\"       (string, required) The account name for the address. It can also be set to the empty string \"\" to represent the default account. The account does not need to exist, it will be created and a new address created  if there is no account by the given name.\n"
             "\nResult:\n"
-            "\"smartcashaddress\"   (string) The account smartcash address\n"
+            "\"smartcashaddress\"   (string) The account SmartCash address\n"
             "\nExamples:\n"
             + HelpExampleCli("getaccountaddress", "")
             + HelpExampleCli("getaccountaddress", "\"\"")
@@ -224,7 +300,7 @@ UniValue getrawchangeaddress(const UniValue& params, bool fHelp)
     if (fHelp || params.size() > 1)
         throw runtime_error(
             "getrawchangeaddress\n"
-            "\nReturns a new smartcash address, for receiving change.\n"
+            "\nReturns a new SmartCash address, for receiving change.\n"
             "This is for use with raw transactions, NOT normal use.\n"
             "\nResult:\n"
             "\"address\"    (string) The address\n"
@@ -250,40 +326,6 @@ UniValue getrawchangeaddress(const UniValue& params, bool fHelp)
     return CBitcoinAddress(keyID).ToString();
 }
 
-UniValue getdummybalance(const UniValue& params, bool fHelp)
-{
-    if (!EnsureWalletIsAvailable(fHelp))
-        return NullUniValue;
-
-    if (fHelp || params.size() > 0)
-        throw runtime_error(
-            "getdummybalance\n"
-            "Returns the current dummybalance.\n");
-
-    CWalletDB walletdb(pwalletMain->strWalletFile);
-    CAmount dummyBalance;
-    walletdb.ReadDummyBalance(dummyBalance);
-
-    return ValueFromAmount(dummyBalance);
-}
-
-UniValue setdummybalance(const UniValue& params, bool fHelp)
-{
-    if (!EnsureWalletIsAvailable(fHelp))
-        return NullUniValue;
-
-    if (fHelp || params.size() != 1)
-        throw runtime_error(
-            "setdummybalance \"dummybalance\" [0 is the default and results in no dummy balance!]\n");
-
-    LOCK2(cs_main, pwalletMain->cs_wallet);
-
-    CWalletDB walletdb(pwalletMain->strWalletFile);
-    CAmount dummyBalance = AmountFromValue(params[0]);
-    walletdb.WriteDummyBalance(dummyBalance);
-    return NullUniValue;
-}
-
 UniValue setaccount(const UniValue& params, bool fHelp)
 {
     if (!EnsureWalletIsAvailable(fHelp))
@@ -294,7 +336,7 @@ UniValue setaccount(const UniValue& params, bool fHelp)
             "setaccount \"smartcashaddress\" \"account\"\n"
             "\nDEPRECATED. Sets the account associated with the given address.\n"
             "\nArguments:\n"
-            "1. \"smartcashaddress\"  (string, required) The smartcash address to be associated with an account.\n"
+            "1. \"smartcashaddress\"  (string, required) The SmartCash address to be associated with an account.\n"
             "2. \"account\"         (string, required) The account to assign the address to.\n"
             "\nExamples:\n"
             + HelpExampleCli("setaccount", "\"SXun9XDHLdBhG4Yd1ueZfLfRpC9kZgwT1b\" \"tabby\"")
@@ -305,7 +347,7 @@ UniValue setaccount(const UniValue& params, bool fHelp)
 
     CBitcoinAddress address(params[0].get_str());
     if (!address.IsValid())
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid smartcash address");
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid SmartCash address");
 
     string strAccount;
     if (params.size() > 1)
@@ -340,7 +382,7 @@ UniValue getaccount(const UniValue& params, bool fHelp)
             "getaccount \"smartcashaddress\"\n"
             "\nDEPRECATED. Returns the account associated with the given address.\n"
             "\nArguments:\n"
-            "1. \"smartcashaddress\"  (string, required) The smartcash address for account lookup.\n"
+            "1. \"smartcashaddress\"  (string, required) The SmartCash address for account lookup.\n"
             "\nResult:\n"
             "\"accountname\"        (string) the account address\n"
             "\nExamples:\n"
@@ -352,7 +394,7 @@ UniValue getaccount(const UniValue& params, bool fHelp)
 
     CBitcoinAddress address(params[0].get_str());
     if (!address.IsValid())
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid smartcash address");
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid SmartCash address");
 
     string strAccount;
     map<CTxDestination, CAddressBookData>::iterator mi = pwalletMain->mapAddressBook.find(address.Get());
@@ -375,7 +417,7 @@ UniValue getaddressesbyaccount(const UniValue& params, bool fHelp)
             "1. \"account\"  (string, required) The account name.\n"
             "\nResult:\n"
             "[                     (json array of string)\n"
-            "  \"smartcashaddress\"  (string) a smartcash address associated with the given account\n"
+            "  \"smartcashaddress\"  (string) a SmartCash address associated with the given account\n"
             "  ,...\n"
             "]\n"
             "\nExamples:\n"
@@ -445,7 +487,7 @@ UniValue sendtoaddress(const UniValue& params, bool fHelp)
             "\nSend an amount to a given address.\n"
             + HelpRequiringPassphrase() +
             "\nArguments:\n"
-            "1. \"smartcashaddress\"  (string, required) The smartcash address to send to.\n"
+            "1. \"smartcashaddress\"  (string, required) The SmartCash address to send to.\n"
             "2. \"amount\"      (numeric or string, required) The amount in " + CURRENCY_UNIT + " to send. eg 0.1\n"
             "3. \"comment\"     (string, optional) A comment used to store what the transaction is for. \n"
             "                             This is not part of the transaction, just kept in your wallet.\n"
@@ -453,7 +495,7 @@ UniValue sendtoaddress(const UniValue& params, bool fHelp)
             "                             to which you're sending the transaction. This is not part of the \n"
             "                             transaction, just kept in your wallet.\n"
             "5. subtractfeefromamount  (boolean, optional, default=false) The fee will be deducted from the amount being sent.\n"
-            "                             The recipient will receive less smartcash than you enter in the amount field.\n"
+            "                             The recipient will receive less SmartCash than you enter in the amount field.\n"
             "6. \"true\"      (bool, optional) Send this transaction with InstantPay (default: false)\n"
             "7. \"true\"      (bool, optional) Use Renewed funds only(disabled) (default: false)\n"
             "\nResult:\n"
@@ -469,7 +511,7 @@ UniValue sendtoaddress(const UniValue& params, bool fHelp)
 
     CBitcoinAddress address(params[0].get_str());
     if (!address.IsValid())
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid smartcash address");
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid SmartCash address");
 
     // Amount
     CAmount nAmount = AmountFromValue(params[1]);
@@ -513,7 +555,7 @@ UniValue instantsendtoaddress(const UniValue& params, bool fHelp)
             "\nSend an amount to a given address. The amount is a real and is rounded to the nearest 0.00000001\n"
             + HelpRequiringPassphrase() +
             "\nArguments:\n"
-            "1. \"smartcashaddress\"  (string, required) The smartcash address to send to.\n"
+            "1. \"smartcashaddress\"  (string, required) The SmartCash address to send to.\n"
             "2. \"amount\"      (numeric, required) The amount in smart to send. eg 0.1\n"
             "3. \"comment\"     (string, optional) A comment used to store what the transaction is for. \n"
             "                             This is not part of the transaction, just kept in your wallet.\n"
@@ -559,6 +601,96 @@ UniValue instantsendtoaddress(const UniValue& params, bool fHelp)
     return wtx.GetHash().GetHex();
 }
 
+
+UniValue sendtoaddresslocked(const UniValue& params, bool fHelp)
+{
+    if (!EnsureWalletIsAvailable(fHelp))
+        return NullUniValue;
+
+    if (fHelp || params.size() < 3 || params.size() > 5)
+        throw runtime_error(
+            "sendtoaddresslocked \"smartcashaddress\" amount blockheight( \"comment\" \"comment-to\" subtractfeefromamount )\n"
+            "\nSend an amount to a given address and lock the output until a future blockheight or Unix time.\n"
+            "This is not an InstantPay lock. Use sendmany or instantsendtoaddress instead.\n"
+            + HelpRequiringPassphrase() +
+            "\nArguments:\n"
+            "1. \"smartcashaddress\"  (string, required) The SmartCash address to send to.\n"
+            "2. \"amount\"      (numeric or string, required) The amount in " + CURRENCY_UNIT + " to send. eg 0.1\n"
+            "3. \"blockheight\" (numeric, required) The blockheight at which the output becomes spendable/unlocked. \n"
+            "                             Unix time can be used for the time available to spend.\n"
+            "                             This is impossible to reverse after sent. Please be careful.\n"
+            "4. \"comment\"     (string, optional) A comment used to store what the transaction is for. \n"
+            "                             This is not part of the transaction, just kept in your wallet.\n"
+            "5. \"comment-to\"  (string, optional) A comment to store the name of the person or organization \n"
+            "                             to which you're sending the transaction. This is not part of the \n"
+            "                             transaction, just kept in your wallet.\n"
+            "\nResult:\n"
+            "\"transactionid\"  (string) The transaction id.\n"
+            "\nExamples:\n"
+            + HelpExampleCli("sendtoaddresslocked", "\"SXun9XDHLdBhG4Yd1ueZfLfRpC9kZgwT1b\" 0.1 1400000")
+            + HelpExampleCli("sendtoaddresslocked", "\"SXun9XDHLdBhG4Yd1ueZfLfRpC9kZgwT1b\" 0.1 1577132833 \"donation\" \"seans outpost\"")
+            + HelpExampleCli("sendtoaddresslocked", "\"SXun9XDHLdBhG4Yd1ueZfLfRpC9kZgwT1b\" 0.1 1400000 \"\" \"\" true")
+            + HelpExampleRpc("sendtoaddresslocked", "\"SXun9XDHLdBhG4Yd1ueZfLfRpC9kZgwT1b\", 0.1, 1400000, \"donation\", \"seans outpost\"")
+        );
+
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+
+    CBitcoinAddress address(params[0].get_str());
+    if (!address.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid SmartCash address");
+
+    // Amount
+    CAmount nAmount = AmountFromValue(params[1]);
+    if (nAmount <= 0)
+        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount for send");
+
+    // Locktime
+    unsigned int nLockTime = params[2].get_int();
+
+    if( nLockTime >= LOCKTIME_THRESHOLD ){
+        throw JSONRPCError(RPC_TYPE_ERROR, strprintf("blockheight needs to be < %d", LOCKTIME_THRESHOLD));
+    }
+
+    // Wallet comments
+    CWalletTx wtx;
+    if (params.size() > 3 && !params[3].isNull() && !params[3].get_str().empty())
+        wtx.mapValue["comment"] = params[3].get_str();
+    if (params.size() > 4 && !params[4].isNull() && !params[4].get_str().empty())
+        wtx.mapValue["to"]      = params[4].get_str();
+
+    EnsureWalletIsUnlocked();
+
+    CAmount curBalance = pwalletMain->GetBalance();
+
+    if (nAmount > curBalance)
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
+
+    if (pwalletMain->GetBroadcastTransactions() && !g_connman)
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+
+    // Parse SmartCash address
+    CScript scriptPubKey = GetLockedScriptForDestination(address.Get(), nLockTime);
+
+    // Create and send the transaction
+    CReserveKey reservekey(pwalletMain);
+    CAmount nFeeRequired;
+    std::string strError;
+    vector<CRecipient> vecSend;
+    int nChangePosRet = -1;
+    CRecipient recipient = {scriptPubKey, nAmount, false};
+    vecSend.push_back(recipient);
+    if (!pwalletMain->CreateTransaction(vecSend, wtx, reservekey, nFeeRequired, nChangePosRet,
+                                         strError, NULL, true, ALL_COINS, false)) {
+        if (nAmount + nFeeRequired > pwalletMain->GetBalance())
+            strError = strprintf("Error: This transaction requires a transaction fee of at least %s because of its amount, complexity, or use of recently received funds!", FormatMoney(nFeeRequired));
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    }
+    if (!pwalletMain->CommitTransaction(wtx, reservekey, g_connman.get(), NetMsgType::TX))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
+
+    return wtx.GetHash().GetHex();
+}
+
 UniValue listaddressgroupings(const UniValue& params, bool fHelp)
 {
     if (!EnsureWalletIsAvailable(fHelp))
@@ -574,7 +706,7 @@ UniValue listaddressgroupings(const UniValue& params, bool fHelp)
             "[\n"
             "  [\n"
             "    [\n"
-            "      \"smartcashaddress\",     (string) The smartcash address\n"
+            "      \"smartcashaddress\",     (string) The SmartCash address\n"
             "      amount,                 (numeric) The amount in " + CURRENCY_UNIT + "\n"
             "      \"account\"             (string, optional) The account (DEPRECATED)\n"
             "    ]\n"
@@ -621,7 +753,7 @@ UniValue signmessage(const UniValue& params, bool fHelp)
             "\nSign a message with the private key of an address"
             + HelpRequiringPassphrase() + "\n"
             "\nArguments:\n"
-            "1. \"smartcashaddress\"  (string, required) The smartcash address to use for the private key.\n"
+            "1. \"smartcashaddress\"  (string, required) The SmartCash address to use for the private key.\n"
             "2. \"message\"         (string, required) The message to create a signature of.\n"
             "\nResult:\n"
             "\"signature\"          (string) The signature of the message encoded in base 64\n"
@@ -676,7 +808,7 @@ UniValue getreceivedbyaddress(const UniValue& params, bool fHelp)
             "getreceivedbyaddress \"smartcashaddress\" ( minconf )\n"
             "\nReturns the total amount received by the given smartcashaddress in transactions with at least minconf confirmations.\n"
             "\nArguments:\n"
-            "1. \"smartcashaddress\"  (string, required) The smartcash address for transactions.\n"
+            "1. \"smartcashaddress\"  (string, required) The SmartCash address for transactions.\n"
             "2. minconf             (numeric, optional, default=1) Only include transactions confirmed at least this many times.\n"
             "3. addlockconf    (bool, optional, default=false) Whether to add " + std::to_string(nInstantSendDepth) + " confirmations to transactions locked via InstantPay.\n"
             "\nResult:\n"
@@ -961,11 +1093,11 @@ UniValue sendfrom(const UniValue& params, bool fHelp)
     if (fHelp || params.size() < 3 || params.size() > 6)
         throw runtime_error(
             "sendfrom \"fromaccount\" \"tosmartcashaddress\" amount ( minconf \"comment\" \"comment-to\" )\n"
-            "\nDEPRECATED (use sendtoaddress). Sent an amount from an account to a smartcash address."
+            "\nDEPRECATED (use sendtoaddress). Sent an amount from an account to a SmartCash address."
             + HelpRequiringPassphrase() + "\n"
             "\nArguments:\n"
             "1. \"fromaccount\"       (string, required) The name of the account to send funds from. May be the default account using \"\".\n"
-            "2. \"tosmartcashaddress\"  (string, required) The smartcash address to send funds to.\n"
+            "2. \"tosmartcashaddress\"  (string, required) The SmartCash address to send funds to.\n"
             "3. amount                (numeric or string, required) The amount in " + CURRENCY_UNIT + " (transaction fee is added on top).\n"
             "4. minconf               (numeric, optional, default=1) Only use funds with at least this many confirmations.\n"
             "5. \"comment\"           (string, optional) A comment used to store what the transaction is for. \n"
@@ -1032,7 +1164,7 @@ UniValue sendmany(const UniValue& params, bool fHelp)
             "1. \"fromaccount\"         (string, required) The account to send the funds from. Should be \"\" for the default account\n"
             "2. \"amounts\"             (string, required) A json object with addresses and amounts\n"
             "    {\n"
-            "      \"address\":amount   (numeric or string) The smartcash address is the key, the numeric amount (can be string) in " + CURRENCY_UNIT + " is the value\n"
+            "      \"address\":amount   (numeric or string) The SmartCash address is the key, the numeric amount (can be string) in " + CURRENCY_UNIT + " is the value\n"
             "      ,...\n"
             "    }\n"
             "3. minconf                 (numeric, optional, default=1) Only use the balance confirmed at least this many times.\n"
@@ -1155,15 +1287,15 @@ UniValue addmultisigaddress(const UniValue& params, bool fHelp)
 
             "\nArguments:\n"
             "1. nrequired        (numeric, required) The number of required signatures out of the n keys or addresses.\n"
-            "2. \"keysobject\"   (string, required) A json array of smartcash addresses or hex-encoded public keys\n"
+            "2. \"keysobject\"   (string, required) A json array of SmartCash addresses or hex-encoded public keys\n"
             "     [\n"
-            "       \"address\"  (string) smartcash address or hex-encoded public key\n"
+            "       \"address\"  (string) SmartCash address or hex-encoded public key\n"
             "       ...,\n"
             "     ]\n"
             "3. \"account\"      (string, optional) DEPRECATED. An account to assign the addresses to.\n"
 
             "\nResult:\n"
-            "\"smartcashaddress\"  (string) A smartcash address associated with the keys.\n"
+            "\"smartcashaddress\"  (string) A SmartCash address associated with the keys.\n"
 
             "\nExamples:\n"
             "\nAdd a multisig address from 2 addresses\n"
@@ -1606,7 +1738,7 @@ UniValue listtransactions(const UniValue& params, bool fHelp)
             "  {\n"
             "    \"account\":\"accountname\",       (string) DEPRECATED. The account name associated with the transaction. \n"
             "                                                It will be \"\" for the default account.\n"
-            "    \"address\":\"smartcashaddress\",    (string) The smartcash address of the transaction. Not present for \n"
+            "    \"address\":\"smartcashaddress\",    (string) The SmartCash address of the transaction. Not present for \n"
             "                                                move transactions (category = move).\n"
             "    \"category\":\"send|receive|move\", (string) The transaction category. 'move' is a local (off blockchain)\n"
             "                                                transaction between accounts, and not associated with an address,\n"
@@ -1813,7 +1945,7 @@ UniValue listsinceblock(const UniValue& params, bool fHelp)
             "{\n"
             "  \"transactions\": [\n"
             "    \"account\":\"accountname\",       (string) DEPRECATED. The account name associated with the transaction. Will be \"\" for the default account.\n"
-            "    \"address\":\"smartcashaddress\",    (string) The smartcash address of the transaction. Not present for move transactions (category = move).\n"
+            "    \"address\":\"smartcashaddress\",    (string) The SmartCash address of the transaction. Not present for move transactions (category = move).\n"
             "    \"category\":\"send|receive\",     (string) The transaction category. 'send' has negative amounts, 'receive' has positive amounts.\n"
             "    \"amount\": x.xxx,          (numeric) The amount in " + CURRENCY_UNIT + ". This is negative for the 'send' category, and for the 'move' category for moves \n"
             "                                          outbound. It is positive for the 'receive' category, and for the 'move' category for inbound funds.\n"
@@ -1917,7 +2049,7 @@ UniValue gettransaction(const UniValue& params, bool fHelp)
             "  \"details\" : [\n"
             "    {\n"
             "      \"account\" : \"accountname\",  (string) DEPRECATED. The account name involved in the transaction, can be \"\" for the default account.\n"
-            "      \"address\" : \"smartcashaddress\",   (string) The smartcash address involved in the transaction\n"
+            "      \"address\" : \"smartcashaddress\",   (string) The SmartCash address involved in the transaction\n"
             "      \"category\" : \"send|receive\",    (string) The category, either 'send' or 'receive'\n"
             "      \"amount\" : x.xxx,                 (numeric) The amount in " + CURRENCY_UNIT + "\n"
             "      \"label\" : \"label\",              (string) A comment for the address/transaction, if any\n"
@@ -2563,9 +2695,9 @@ UniValue listunspent(const UniValue& params, bool fHelp)
             "\nArguments:\n"
             "1. minconf          (numeric, optional, default=1) The minimum confirmations to filter\n"
             "2. maxconf          (numeric, optional, default=9999999) The maximum confirmations to filter\n"
-            "3. \"addresses\"    (string) A json array of smartcash addresses to filter\n"
+            "3. \"addresses\"    (string) A json array of SmartCash addresses to filter\n"
             "    [\n"
-            "      \"address\"   (string) smartcash address\n"
+            "      \"address\"   (string) SmartCash address\n"
             "      ,...\n"
             "    ]\n"
             "\nResult\n"
@@ -2573,7 +2705,7 @@ UniValue listunspent(const UniValue& params, bool fHelp)
             "  {\n"
             "    \"txid\" : \"txid\",          (string) the transaction id \n"
             "    \"vout\" : n,               (numeric) the vout value\n"
-            "    \"address\" : \"address\",    (string) the smartcash address\n"
+            "    \"address\" : \"address\",    (string) the SmartCash address\n"
             "    \"account\" : \"account\",    (string) DEPRECATED. The associated account, or \"\" for the default account\n"
             "    \"scriptPubKey\" : \"key\",   (string) the script key\n"
             "    \"amount\" : x.xxx,         (numeric) the transaction amount in " + CURRENCY_UNIT + "\n"
@@ -2681,7 +2813,7 @@ UniValue fundrawtransaction(const UniValue& params, bool fHelp)
                             "1. \"hexstring\"           (string, required) The hex string of the raw transaction\n"
                             "2. options               (object, optional)\n"
                             "   {\n"
-                            "     \"changeAddress\"     (string, optional, default pool address) The smartcash address to receive the change\n"
+                            "     \"changeAddress\"     (string, optional, default pool address) The SmartCash address to receive the change\n"
                             "     \"changePosition\"    (numeric, optional, default random) The index of the change output\n"
                             "     \"includeWatching\"   (boolean, optional, default false) Also select inputs which are watch only\n"
                             "     \"lockUnspents\"      (boolean, optional, default false) Lock selected unspent outputs\n"
@@ -2739,7 +2871,7 @@ UniValue fundrawtransaction(const UniValue& params, bool fHelp)
             CBitcoinAddress address(options["changeAddress"].get_str());
 
             if (!address.IsValid())
-                throw JSONRPCError(RPC_INVALID_PARAMETER, "changeAddress must be a valid smartcash address");
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "changeAddress must be a valid SmartCash address");
 
             changeAddress = address.Get();
         }
@@ -2810,11 +2942,10 @@ static const CRPCCommand commands[] =
     { "wallet",             "encryptwallet",            &encryptwallet,            true  },
     { "wallet",             "getaccountaddress",        &getaccountaddress,        true  },
     { "wallet",             "getaccount",               &getaccount,               true  },
+    { "wallet",             "getaddress",               &getaddress,               true  },
     { "wallet",             "getaddressesbyaccount",    &getaddressesbyaccount,    true  },
     { "wallet",             "getbalance",               &getbalance,               false },
     { "wallet",             "getnewaddress",            &getnewaddress,            true  },
-//    { "wallet",             "getdummybalance",          &getdummybalance,          true  },
-//    { "wallet",             "setdummybalance",          &setdummybalance,          true  },
     { "wallet",             "getrawchangeaddress",      &getrawchangeaddress,      true  },
     { "wallet",             "getreceivedbyaccount",     &getreceivedbyaccount,     false },
     { "wallet",             "getreceivedbyaddress",     &getreceivedbyaddress,     false },

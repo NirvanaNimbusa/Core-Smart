@@ -5,6 +5,7 @@
 #include "smartvoting.h"
 #include "ui_smartvoting.h"
 #include "smartproposal.h"
+#include "smartrewards/rewards.h"
 
 #include "addresstablemodel.h"
 #include "bitcoinunits.h"
@@ -19,6 +20,7 @@
 #include "castvotesdialog.h"
 #include "validation.h"
 #include "voteaddressesdialog.h"
+#include "specialtransactiondialog.h"
 
 #include <boost/assign/list_of.hpp> // for 'map_list_of()'
 
@@ -159,7 +161,7 @@ void SmartVotingPage::updateUI()
 void SmartVotingPage::proposalsUpdated(const string &strErr)
 {
     if( strErr != ""){
-        QMessageBox::warning(this, "Error", QString("Could not update proposal list\n\n%1").arg(QString::fromStdString(strErr)));
+//        QMessageBox::warning(this, "Error", QString("Could not update proposal list\n\n%1").arg(QString::fromStdString(strErr)));
         return;
     }
 
@@ -193,11 +195,13 @@ void SmartVotingPage::selectAddresses(){
 void SmartVotingPage::castVotes(){
 
     CastVotesDialog dialog(platformStyle, votingManager, walletModel);
+
     dialog.setVoting(mapVoteProposals);
 
     dialog.exec();
 
     refreshProposals(true);
+    uiInterface.NotifySmartRewardUpdate();
 }
 
 void SmartVotingPage::updateRefreshLock()
@@ -243,3 +247,4 @@ void SmartVotingPage::balanceChanged(const CAmount &balance, const CAmount &unco
 {
     updateUI();
 }
+

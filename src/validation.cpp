@@ -15,6 +15,7 @@
 #include "consensus/validation.h"
 #include "hash.h"
 #include "init.h"
+#include "messagesigner.h"
 #include "net_processing.h"
 #include "policy/policy.h"
 #include "pow.h"
@@ -52,14 +53,13 @@
 #include "smartnode/instantx.h"
 #include "smartnode/spork.h"
 #include "smartmining/miningpayments.h"
+#include "smartvoting/votevalidation.h"
 
 using namespace std;
 
 #if defined(NDEBUG)
 # error "smartcash cannot be compiled without assertions."
 #endif
-
-#define ZEROCOIN_MODULUS   "25195908475657893494027183240048398571429282126204032027777137836043662020707595556264018525880784406918290641249515082189298559149176184502808489120072844992687392807287776735971418347270261896375014971824691165077613379859095700097330459748808428401797429100642458691817195118746121515172654632282216869987549182422433637259085141865462043576798423387184774447920739934236584823824281198163815010674810451660377306056201619676256133844143603833904414952634432190114657544454178424020924616515723350778707749817125772467962926386356373289912154831438167899885040445364023527381951378636564391212010397122822120720357"
 
 /**
  * Global state
@@ -76,9 +76,11 @@ int nScriptCheckThreads = 0;
 bool fImporting = false;
 bool fReindex = false;
 bool fTxIndex = true;
-bool fAddressIndex = false;
+bool fInstantPayIndex = DEFAULT_INSTANTPAYINDEX;
+bool fAddressIndex = true;
 bool fTimestampIndex = false;
 bool fSpentIndex = false;
+bool fDepositIndex = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -119,11 +121,6 @@ struct COrphanTx {
 };
 void EraseOrphansFor(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
-/**
- * Returns true if there are nRequired or more blocks of minVersion or above
- * in the last Consensus::Params::nMajorityWindow blocks, starting at pstart and going backwards.
- */
-static bool IsSuperMajority(int minVersion, const CBlockIndex* pstart, unsigned nRequired, const Consensus::Params& consensusParams);
 static void CheckBlockIndex(const Consensus::Params& consensusParams);
 
 /** Constant stuff for coinbase transactions we create: */
@@ -1166,14 +1163,85 @@ bool GetAddressIndex(uint160 addressHash, int type,
     return true;
 }
 
-bool GetAddressUnspent(uint160 addressHash, int type,
-                       std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > &unspentOutputs)
+bool GetAddresses(std::vector<CAddressListEntry> &addressList, int nEndHeight, bool excludeZeroBalances)
 {
     if (!fAddressIndex)
         return error("address index not enabled");
 
-    if (!pblocktree->ReadAddressUnspentIndex(addressHash, type, unspentOutputs))
+    if (!pblocktree->ReadAddresses(addressList, nEndHeight, excludeZeroBalances))
+        return error("unable to get all addresses");
+
+    return true;
+}
+
+bool GetAddressUnspentCount(uint160 addressHash, int type, int &count, CAddressUnspentKey &lastIndex)
+{
+    if (!fAddressIndex)
+        return error("address index not enabled");
+
+    if (!pblocktree->ReadAddressUnspentIndexCount(addressHash, type, count, lastIndex))
+        return error("unable to get unspent count for address");
+
+    return true;
+}
+
+bool GetAddressUnspent(uint160 addressHash, int type,
+                       std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > &unspentOutputs,
+                       const CAddressUnspentKey &start,
+                       int offset, int limit, bool reverse)
+{
+    if (!fAddressIndex)
+        return error("address index not enabled");
+
+    if (!pblocktree->ReadAddressUnspentIndex(addressHash, type, unspentOutputs, start, offset, limit, reverse))
         return error("unable to get txids for address");
+
+    return true;
+}
+
+bool GetDepositIndexCount(uint160 addressHash, int type, int &count, int &firstTime, int &lastTime, int start, int end)
+{
+    if (!fDepositIndex)
+        return error("deposit index not enabled");
+
+    if (!pblocktree->ReadDepositIndexCount(addressHash, type, count, firstTime, lastTime, start, end))
+        return error("unable to get deposits count for address");
+
+    return true;
+}
+
+bool GetDepositIndex(uint160 addressHash, int type,
+                     std::vector<std::pair<CDepositIndexKey, CDepositValue>> &depositIndex,
+                     int start, int offset, int limit, bool reverse)
+{
+    if (!fDepositIndex)
+        return error("deposit index not enabled");
+
+    if (!pblocktree->ReadDepositIndex(addressHash, type, depositIndex, start, offset, limit, reverse))
+        return error("unable to get deposits for address");
+
+    return true;
+}
+
+bool GetInstantPayIndexCount(int &count, int &firstTime, int &lastTime, int start, int end)
+{
+    if (!fInstantPayIndex)
+        return error("instantpay index not enabled");
+
+    if (!pblocktree->ReadInstantPayIndexCount(count, firstTime, lastTime, start, end))
+        return error("unable to get instantpay index count");
+
+    return true;
+}
+
+bool GetInstantPayIndex(std::vector<std::pair<CInstantPayIndexKey, CInstantPayValue>> &instantPayIndex,
+                        int start, int offset, int limit, bool reverse)
+{
+    if (!fInstantPayIndex)
+        return error("instantpay index not enabled");
+
+    if (!pblocktree->ReadInstantPayIndex(instantPayIndex, start, offset, limit, reverse))
+        return error("unable to get instantpay index");
 
     return true;
 }
@@ -1259,7 +1327,7 @@ bool GetTransaction(const uint256 &hash, CTransaction &txOut, const Consensus::P
 //
 
 int getNHeight(const CBlockHeader &block) {
-    CBlockIndex *pindexPrev = NULL;
+    CBlockIndex *pindexPrev = nullptr;
     int nHeight = 0;
     BlockMap::iterator mi = mapBlockIndex.find(block.hashPrevBlock);
     if (mi != mapBlockIndex.end()) {
@@ -1355,7 +1423,7 @@ bool IsInitialBlockDownload()
     return false;
 }
 
-CBlockIndex *pindexBestForkTip = NULL, *pindexBestForkBase = NULL;
+CBlockIndex *pindexBestForkTip = nullptr, *pindexBestForkBase = nullptr;
 
 // static void AlertNotify(const std::string& strMessage)
 // {
@@ -1756,10 +1824,11 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
 
 /** Undo the effects of this block (with given index) on the UTXO set represented by coins.
  *  When UNCLEAN or FAILED is returned, view is left in an indeterminate state. */
-static DisconnectResult DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockIndex* pindex, CCoinsViewCache& view)
+static DisconnectResult DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockIndex* pindex, CCoinsViewCache& view, bool fIsVerifyDB = false)
 {
     assert(pindex->GetBlockHash() == view.GetBestBlock());
 
+    CChainParams params = Params();
     bool fClean = true;
 
     CBlockUndo blockUndo;
@@ -1781,38 +1850,82 @@ static DisconnectResult DisconnectBlock(const CBlock& block, CValidationState& s
     std::vector<std::pair<CAddressIndexKey, CAmount> > addressIndex;
     std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > addressUnspentIndex;
     std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> > spentIndex;
+    std::vector<std::pair<CDepositIndexKey, CDepositValue> > depositIndex;
+    /* WIP-VOTING uncomment
+    std::map<CVoteKey, CSmartAddress> mapVoteKeys;
+    std::vector<CVoteKeyRegistrationKey> vecInvalidVoteKeyRegistrations;
+    */
+
+    // Result of the smartrewards block processing.
+    CSmartRewardsUpdateResult smartRewardsResult(pindex);
 
     // undo transactions in reverse order
     for (int i = block.vtx.size() - 1; i >= 0; i--) {
         const CTransaction &tx = block.vtx[i];
         uint256 hash = tx.GetHash();
         bool is_coinbase = tx.IsCoinBase();
+        std::map<std::pair<uint160, int>, CAmount> vecInputs;
+        std::map<std::pair<uint160, int>, CAmount> vecOutputs;
 
-        if (fAddressIndex) {
+        if (fAddressIndex || fDepositIndex) {
+
+            uint160 hashBytes;
+            int addressType;
 
             for (unsigned int k = tx.vout.size(); k-- > 0;) {
                 const CTxOut &out = tx.vout[k];
 
                 if (out.scriptPubKey.IsPayToScriptHash()) {
-                    vector<unsigned char> hashBytes(out.scriptPubKey.begin()+2, out.scriptPubKey.begin()+22);
 
-                    // undo receiving activity
-                    addressIndex.push_back(make_pair(CAddressIndexKey(2, uint160(hashBytes), pindex->nHeight, i, hash, k, false), out.nValue));
-
-                    // undo unspent index
-                    addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(2, uint160(hashBytes), hash, k), CAddressUnspentValue()));
-
+                    hashBytes = uint160(vector<unsigned char>(out.scriptPubKey.begin()+2, out.scriptPubKey.begin()+22));
+                    addressType = 2;
                 } else if (out.scriptPubKey.IsPayToPublicKeyHash()) {
-                    vector<unsigned char> hashBytes(out.scriptPubKey.begin()+3, out.scriptPubKey.begin()+23);
 
-                    // undo receiving activity
-                    addressIndex.push_back(make_pair(CAddressIndexKey(1, uint160(hashBytes), pindex->nHeight, i, hash, k, false), out.nValue));
+                    hashBytes = uint160(vector<unsigned char>(out.scriptPubKey.begin()+3, out.scriptPubKey.begin()+23));
+                    addressType = 1;
+                } else if (out.scriptPubKey.IsPayToPublicKey()) {
 
-                    // undo unspent index
-                    addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(1, uint160(hashBytes), hash, k), CAddressUnspentValue()));
+                    vector<unsigned char> pubKeyBytes(out.scriptPubKey.begin()+1, out.scriptPubKey.begin()+34);
+                    CPubKey pubKey(pubKeyBytes);
+                    hashBytes = pubKey.GetID();
+                    addressType = 1;
+                } else if (out.scriptPubKey.IsPayToScriptHashLocked()) {
 
+                    int nOffset = out.scriptPubKey[0] + 5;
+
+                    hashBytes = uint160(vector<unsigned char>(out.scriptPubKey.begin() + nOffset, out.scriptPubKey.begin() + nOffset + 20));
+                    addressType = 2;
+                } else if (out.scriptPubKey.IsPayToPublicKeyHashLocked()) {
+
+                    int nOffset = out.scriptPubKey[0] + 6;
+
+                    hashBytes = uint160(vector<unsigned char>(out.scriptPubKey.begin() + nOffset, out.scriptPubKey.begin() + nOffset + 20));
+                    addressType = 1;
                 } else {
                     continue;
+                }
+
+                if( fAddressIndex ){
+
+                    // undo receiving activity
+                    addressIndex.push_back(make_pair(CAddressIndexKey(addressType, hashBytes, pindex->nHeight, i, hash, k, false), out.nValue));
+
+                    // undo unspent index
+                    addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(addressType, hashBytes, hash, k, pindex->nHeight), CAddressUnspentValue()));
+                }
+
+                if ( fDepositIndex ) {
+
+                    auto it = vecOutputs.find(std::make_pair(hashBytes,addressType));
+
+                    if( it == vecOutputs.end() ){
+                        // For the first occurrence of the address it
+                        vecOutputs.insert(std::make_pair(std::make_pair(hashBytes,addressType), out.nValue));
+                    }else{
+                        // For further ones add up the amount
+                        it->second += out.nValue;
+                    }
+
                 }
 
             }
@@ -1853,35 +1966,129 @@ static DisconnectResult DisconnectBlock(const CBlock& block, CValidationState& s
                     spentIndex.push_back(make_pair(CSpentIndexKey(input.prevout.hash, input.prevout.n), CSpentIndexValue()));
                 }
 
-                if (fAddressIndex) {
+                if (fAddressIndex || fDepositIndex) {
+
                     const Coin &coin = view.AccessCoin(tx.vin[j].prevout);
                     const CTxOut &prevout = coin.out;
+
+                    uint160 hashBytes;
+                    int addressType = 0;
+
                     if (prevout.scriptPubKey.IsPayToScriptHash()) {
-                        vector<unsigned char> hashBytes(prevout.scriptPubKey.begin()+2, prevout.scriptPubKey.begin()+22);
 
-                        // undo spending activity
-                        addressIndex.push_back(make_pair(CAddressIndexKey(2, uint160(hashBytes), pindex->nHeight, i, hash, j, true), prevout.nValue * -1));
-
-                        // restore unspent index
-                        addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(2, uint160(hashBytes), input.prevout.hash, input.prevout.n), CAddressUnspentValue(prevout.nValue, prevout.scriptPubKey, undoHeight)));
-
+                        hashBytes = uint160(vector<unsigned char>(prevout.scriptPubKey.begin()+2, prevout.scriptPubKey.begin()+22));
+                        addressType = 2;
 
                     } else if (prevout.scriptPubKey.IsPayToPublicKeyHash()) {
-                        vector<unsigned char> hashBytes(prevout.scriptPubKey.begin()+3, prevout.scriptPubKey.begin()+23);
 
-                        // undo spending activity
-                        addressIndex.push_back(make_pair(CAddressIndexKey(1, uint160(hashBytes), pindex->nHeight, i, hash, j, true), prevout.nValue * -1));
+                        hashBytes = uint160(vector<unsigned char>(prevout.scriptPubKey.begin()+3, prevout.scriptPubKey.begin()+23));
+                        addressType = 1;
 
-                        // restore unspent index
-                        addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(1, uint160(hashBytes), input.prevout.hash, input.prevout.n), CAddressUnspentValue(prevout.nValue, prevout.scriptPubKey, undoHeight)));
+                    } else if (prevout.scriptPubKey.IsPayToPublicKey()) {
+
+                        vector<unsigned char> pubKeyBytes(prevout.scriptPubKey.begin()+1, prevout.scriptPubKey.begin()+34);
+                        CPubKey pubKey(pubKeyBytes);
+                        hashBytes = pubKey.GetID();
+                        addressType = 1;
+                    } else if (prevout.scriptPubKey.IsPayToScriptHashLocked()) {
+
+                        int nOffset = prevout.scriptPubKey[0] + 5;
+
+                        hashBytes = uint160(vector<unsigned char>(prevout.scriptPubKey.begin() + nOffset, prevout.scriptPubKey.begin() + nOffset + 20));
+                        addressType = 2;
+
+                    } else if (prevout.scriptPubKey.IsPayToPublicKeyHashLocked()) {
+
+                        int nOffset = prevout.scriptPubKey[0] + 6;
+
+                        hashBytes = uint160(vector<unsigned char>(prevout.scriptPubKey.begin() + nOffset, prevout.scriptPubKey.begin() + nOffset + 20));
+                        addressType = 1;
 
                     } else {
                         continue;
                     }
+
+                    if ( fDepositIndex ) {
+
+                        auto it = vecInputs.find(std::make_pair(hashBytes,addressType));
+
+                        if( it == vecInputs.end() ){
+                            // For the first occurrence of the address it
+                            vecInputs.insert(std::make_pair(std::make_pair(hashBytes,addressType), prevout.nValue));
+                        }else{
+                            // For further ones add up the amount
+                            it->second += prevout.nValue;
+                        }
+
+                    }
+
+                    if( fAddressIndex ){
+
+                        // undo spending activity
+                        addressIndex.push_back(make_pair(CAddressIndexKey(addressType, hashBytes, pindex->nHeight, i, hash, j, true), prevout.nValue * -1));
+
+                        // restore unspent index
+                        addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(addressType, hashBytes, input.prevout.hash, input.prevout.n, undoHeight), CAddressUnspentValue(prevout.nValue, prevout.scriptPubKey, undoHeight)));
+                    }
+
                 }
 
             }
+
+            /* WIP-VOTING uncomment
+            if( tx.IsVoteKeyRegistration() ){
+
+                CVoteKey voteKey;
+                CSmartAddress voteAddress;
+                CVoteKeyValue voteKeyValue;
+
+                VoteKeyParseResult result = ParseVoteKeyRegistration(tx, view, voteKey, voteAddress);
+
+                if( result == VoteKeyParseResult::Valid ){
+
+                    if( GetVoteKeyValue(voteKey, voteKeyValue) &&
+                        voteKeyValue.nBlockHeight == pindex->nHeight &&
+                        voteKeyValue.voteAddress == voteAddress ){
+
+                        mapVoteKeys.insert(std::make_pair(voteKey, voteKeyValue.voteAddress));
+                        LogPrint("votekeys", "Erase registered VoteKey %s for address %s, tx=%s\n", voteKey.ToString(), voteAddress.ToString(), tx.GetHash().ToString());
+                    }
+
+                }else{
+                    LogPrint("votekeys", "Invalid VoteKey registration %s, result=%d\n", tx.GetHash().ToString(), result);
+                }
+
+                vecInvalidVoteKeyRegistrations.push_back(CVoteKeyRegistrationKey(pindex->nHeight, tx.GetHash()));
+            }
+            */
+
+            if( fDepositIndex ){
+
+                for( auto const &output : vecOutputs ){
+
+                    auto input = vecInputs.find(std::make_pair( output.first.first, output.first.second ));
+
+                    if( input == vecInputs.end() ){
+                        // If there is no input related to the address of this output just add it as deposit
+                        depositIndex.push_back(std::make_pair(CDepositIndexKey(output.first.second, output.first.first, block.nTime, tx.GetHash() ),CDepositValue(output.second,pindex->nHeight)));
+                    }else{
+
+                        // If there is an input related to the address of this output evaluate if the outputs exceed the inputs
+                        CAmount nDeposit = output.second - input->second;
+
+                        if( nDeposit > 0 ){
+                            // If the outputs exceed the inputs add the deposit.
+                            depositIndex.push_back(std::make_pair(CDepositIndexKey(output.first.second, output.first.first, block.nTime, tx.GetHash() ),CDepositValue(nDeposit,pindex->nHeight)));
+                        }
+                    }
+                }
+            }
+
             // At this point, all of txundo.vprevout should have been moved out.
+        }
+
+        if( !fIsVerifyDB ){
+            prewards->UndoTransaction((CBlockIndex*) pindex, tx, view, params, smartRewardsResult);
         }
     }
 
@@ -1889,7 +2096,15 @@ static DisconnectResult DisconnectBlock(const CBlock& block, CValidationState& s
     // move best block pointer to prevout block
     view.SetBestBlock(pindex->pprev->GetBlockHash());
 
-    if (fAddressIndex) {
+    if (!fIsVerifyDB && fDepositIndex) {
+
+        if( !pblocktree->EraseDepositIndex(depositIndex) ){
+            AbortNode(state, "Failed to write deposit index");
+            return DISCONNECT_FAILED;
+        }
+    }
+
+    if (!fIsVerifyDB && fAddressIndex) {
         if (!pblocktree->EraseAddressIndex(addressIndex)) {
             AbortNode(state, "Failed to delete address index");
             return DISCONNECT_FAILED;
@@ -1899,6 +2114,23 @@ static DisconnectResult DisconnectBlock(const CBlock& block, CValidationState& s
             return DISCONNECT_FAILED;
         }
     }
+
+    if( !fIsVerifyDB && !prewards->CommitUndoBlock( (CBlockIndex*) pindex, smartRewardsResult) ){
+        AbortNode(state, "Failed to commit smartrewards block undo");
+        return DISCONNECT_FAILED;
+    }
+
+    /* WIP-VOTING uncomment
+    if( mapVoteKeys.size() && !pblocktree->EraseVoteKeys(mapVoteKeys) ){
+        AbortNode(state, "Failed to erase vote keys");
+        return DISCONNECT_FAILED;
+    }
+
+    if( vecInvalidVoteKeyRegistrations.size() && !pblocktree->EraseInvalidVoteKeyRegistrations(vecInvalidVoteKeyRegistrations) ){
+        AbortNode(state, "Failed to erase invalid VoteKey registrations");
+        return DISCONNECT_FAILED;
+    }
+    */
 
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
@@ -2010,7 +2242,7 @@ static int64_t nTimeTotal = 0;
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
-static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& view, bool fJustCheck = false)
+static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& view, bool fJustCheck = false, bool fIsVerifyDB = false)
 {
     const CChainParams& chainparams = Params();
     AssertLockHeld(cs_main);
@@ -2132,6 +2364,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL);
 
     std::vector<int> prevheights;
+    std::vector<Coin> prevouts;
     CAmount nFees = 0;
     int nInputs = 0;
     unsigned int nSigOps = 0;
@@ -2142,6 +2375,14 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     std::vector<std::pair<CAddressIndexKey, CAmount> > addressIndex;
     std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > addressUnspentIndex;
     std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> > spentIndex;
+    std::vector<std::pair<CDepositIndexKey, CDepositValue> > depositIndex;
+    /* WIP-VOTING uncomment
+    std::vector<std::pair<CVoteKeyRegistrationKey, VoteKeyParseResult>> vecInvalidVoteKeyRegistrations;
+    std::map<CVoteKey, CVoteKeyValue> mapVoteKeys;
+    */
+
+    // Result of the smartrewards block processing.
+    CSmartRewardsUpdateResult smartRewardsResult(pindex);
 
     //bool fDIP0001Active_context = (VersionBitsState(pindex->pprev, chainparams.GetConsensus(), Consensus::DEPLOYMENT_DIP0001, versionbitscache) == THRESHOLD_ACTIVE);
 
@@ -2149,6 +2390,11 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     {
         const CTransaction &tx = block.vtx[i];
         const uint256 txhash = tx.GetHash();
+        std::map<std::pair<uint160, int>, CAmount> vecInputs;
+        std::map<std::pair<uint160, int>, CAmount> vecOutputs;
+
+        int nCurrentRewardsRound = prewards->GetCurrentRound()->number;
+        bool fProcessRewards = !fIsVerifyDB && prewards->ProcessTransaction(pindex, tx, nCurrentRewardsRound);
 
         nInputs += tx.vin.size();
         nSigOps += GetLegacySigOpCount(tx);
@@ -2166,8 +2412,11 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             // BIP68 lock checks (as opposed to nLockTime checks) must
             // be in ConnectBlock because they require the UTXO set
             prevheights.resize(tx.vin.size());
+            prevouts.resize(tx.vin.size());
+
             for (size_t j = 0; j < tx.vin.size(); j++) {
-                prevheights[j] = view.AccessCoin(tx.vin[j].prevout).nHeight;
+                prevouts[j] = view.AccessCoin(tx.vin[j].prevout);
+                prevheights[j] = prevouts[j].nHeight;
             }
 
             if (!SequenceLocks(tx, nLockTimeFlags, &prevheights, *pindex)) {
@@ -2175,12 +2424,18 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
                                  REJECT_INVALID, "bad-txns-nonfinal");
             }
 
-            if (fAddressIndex || fSpentIndex)
-            {
-                for (size_t j = 0; j < tx.vin.size(); j++) {
-                    const CTxIn input = tx.vin[j];
-                    const Coin& coin = view.AccessCoin(tx.vin[j].prevout);
-                    const CTxOut &prevout = coin.out;
+            for (size_t j = 0; j < tx.vin.size(); j++) {
+
+                const CTxIn input = tx.vin[j];
+                const Coin& coin = prevouts[j];
+                const CTxOut &prevout = coin.out;
+
+                if( fProcessRewards && !input.scriptSig.IsZerocoinSpend() ){
+                    prewards->ProcessInput(tx, prevout, nCurrentRewardsRound, smartRewardsResult);
+                }
+
+                if (fAddressIndex || fSpentIndex || fDepositIndex)
+                {
                     uint160 hashBytes;
                     int addressType;
 
@@ -2190,9 +2445,38 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
                     } else if (prevout.scriptPubKey.IsPayToPublicKeyHash()) {
                         hashBytes = uint160(vector <unsigned char>(prevout.scriptPubKey.begin()+3, prevout.scriptPubKey.begin()+23));
                         addressType = 1;
+                    } else if (prevout.scriptPubKey.IsPayToPublicKey()) {
+                        vector<unsigned char> pubKeyBytes(prevout.scriptPubKey.begin()+1, prevout.scriptPubKey.begin()+34);
+                        CPubKey pubKey(pubKeyBytes);
+                        hashBytes = pubKey.GetID();
+                        addressType = 1;
+                    } else if (prevout.scriptPubKey.IsPayToScriptHashLocked()) {
+                        int nOffset = prevout.scriptPubKey[0] + 5;
+
+                        hashBytes = uint160(vector<unsigned char>(prevout.scriptPubKey.begin() + nOffset, prevout.scriptPubKey.begin() + nOffset + 20));
+                        addressType = 2;
+                    } else if (prevout.scriptPubKey.IsPayToPublicKeyHashLocked()) {
+                        int nOffset = prevout.scriptPubKey[0] + 6;
+
+                        hashBytes = uint160(vector<unsigned char>(prevout.scriptPubKey.begin() + nOffset, prevout.scriptPubKey.begin() + nOffset + 20));
+                        addressType = 1;
                     } else {
                         hashBytes.SetNull();
                         addressType = 0;
+                    }
+
+                    if (fDepositIndex && addressType) {
+
+                        auto it = vecInputs.find(std::make_pair(hashBytes,addressType));
+
+                        if( it == vecInputs.end() ){
+                            // For the first occurrence of the address it
+                            vecInputs.insert(std::make_pair(std::make_pair(hashBytes,addressType), prevout.nValue));
+                        }else{
+                            // For further ones add up the amount
+                            it->second += prevout.nValue;
+                        }
+
                     }
 
                     if (fAddressIndex && addressType > 0) {
@@ -2200,7 +2484,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
                         addressIndex.push_back(make_pair(CAddressIndexKey(addressType, hashBytes, pindex->nHeight, i, txhash, j, true), prevout.nValue * -1));
 
                         // remove address from unspent index
-                        addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(addressType, hashBytes, input.prevout.hash, input.prevout.n), CAddressUnspentValue()));
+                        addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(addressType, hashBytes, input.prevout.hash, input.prevout.n, coin.nHeight), CAddressUnspentValue()));
                     }
 
                     if (fSpentIndex) {
@@ -2233,34 +2517,140 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             control.Add(vChecks);
         }
 
-        if (fAddressIndex) {
-            for (unsigned int k = 0; k < tx.vout.size(); k++) {
-                const CTxOut &out = tx.vout[k];
+        for (unsigned int k = 0; k < tx.vout.size(); k++) {
+
+            const CTxOut &out = tx.vout[k];
+
+            if( fProcessRewards && !out.scriptPubKey.IsZerocoinMint() ){
+                prewards->ProcessOutput(tx, out, nCurrentRewardsRound, pindex->nHeight, smartRewardsResult);
+            }
+
+            if (fAddressIndex || fDepositIndex) {
+
+                uint160 hashBytes;
+                int addressType;
 
                 if (out.scriptPubKey.IsPayToScriptHash()) {
-                    vector<unsigned char> hashBytes(out.scriptPubKey.begin()+2, out.scriptPubKey.begin()+22);
-
-                    // record receiving activity
-                    addressIndex.push_back(make_pair(CAddressIndexKey(2, uint160(hashBytes), pindex->nHeight, i, txhash, k, false), out.nValue));
-
-                    // record unspent output
-                    addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(2, uint160(hashBytes), txhash, k), CAddressUnspentValue(out.nValue, out.scriptPubKey, pindex->nHeight)));
-
+                    hashBytes = uint160(vector <unsigned char>(out.scriptPubKey.begin()+2, out.scriptPubKey.begin()+22));
+                    addressType = 2;
                 } else if (out.scriptPubKey.IsPayToPublicKeyHash()) {
-                    vector<unsigned char> hashBytes(out.scriptPubKey.begin()+3, out.scriptPubKey.begin()+23);
+                    hashBytes = uint160(vector <unsigned char>(out.scriptPubKey.begin()+3, out.scriptPubKey.begin()+23));
+                    addressType = 1;
+                } else if (out.scriptPubKey.IsPayToPublicKey()) {
+                    vector<unsigned char> pubKeyBytes(out.scriptPubKey.begin()+1, out.scriptPubKey.begin()+34);
+                    CPubKey pubKey(pubKeyBytes);
+                    hashBytes = pubKey.GetID();
+                    addressType = 1;
+                } else if (out.scriptPubKey.IsPayToScriptHashLocked()) {
+                    int nOffset = out.scriptPubKey[0] + 5;
 
-                    // record receiving activity
-                    addressIndex.push_back(make_pair(CAddressIndexKey(1, uint160(hashBytes), pindex->nHeight, i, txhash, k, false), out.nValue));
+                    hashBytes = uint160(vector<unsigned char>(out.scriptPubKey.begin() + nOffset, out.scriptPubKey.begin() + nOffset + 20));
+                    addressType = 2;
+                } else if (out.scriptPubKey.IsPayToPublicKeyHashLocked()) {
+                    int nOffset = out.scriptPubKey[0] + 6;
 
-                    // record unspent output
-                    addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(1, uint160(hashBytes), txhash, k), CAddressUnspentValue(out.nValue, out.scriptPubKey, pindex->nHeight)));
-
+                    hashBytes = uint160(vector<unsigned char>(out.scriptPubKey.begin() + nOffset, out.scriptPubKey.begin() + nOffset + 20));
+                    addressType = 1;
                 } else {
                     continue;
                 }
 
+                if ( fDepositIndex ) {
+
+                    auto it = vecOutputs.find(std::make_pair(hashBytes,addressType));
+
+                    if( it == vecOutputs.end() ){
+                        // For the first occurrence of the address it
+                        vecOutputs.insert(std::make_pair(std::make_pair(hashBytes,addressType), out.nValue));
+                    }else{
+                        // For further ones add up the amount
+                        it->second += out.nValue;
+                    }
+
+                }
+
+                if( fAddressIndex ){
+
+                    // record receiving activity
+                    addressIndex.push_back(make_pair(CAddressIndexKey(addressType, hashBytes, pindex->nHeight, i, txhash, k, false), out.nValue));
+                    // record unspent output
+                    addressUnspentIndex.push_back(make_pair(CAddressUnspentKey(addressType, hashBytes, txhash, k, pindex->nHeight), CAddressUnspentValue(out.nValue, out.scriptPubKey, pindex->nHeight)));
+                }
+
+            }
+
+            if( fDepositIndex ){
+
+                for( auto const &output : vecOutputs ){
+
+                    auto input = vecInputs.find(std::make_pair( output.first.first, output.first.second ));
+
+                    if( input == vecInputs.end() ){
+                        // If there is no input related to the address of this output just add it as deposit
+                        depositIndex.push_back(std::make_pair(CDepositIndexKey(output.first.second, output.first.first, block.nTime, tx.GetHash() ),CDepositValue(output.second,pindex->nHeight)));
+                    }else{
+
+                        // If there is an input related to the address of this output evaluate if the outputs exceed the inputs
+                        CAmount nDeposit = output.second - input->second;
+
+                        if( nDeposit > 0 ){
+                            // If the outputs exceed the inputs add the deposit.
+                            depositIndex.push_back(std::make_pair(CDepositIndexKey(output.first.second, output.first.first, block.nTime, tx.GetHash() ),CDepositValue(nDeposit,pindex->nHeight)));
+                        }
+                    }
+                }
             }
         }
+
+        /* WIP-VOTING uncomment
+        if( tx.IsVoteKeyRegistration() ){
+
+            CVoteKey voteKey, otherVoteKey;
+            CSmartAddress voteAddress;
+            CVoteKeyValue voteKeyValue;
+
+            VoteKeyParseResult result = ParseVoteKeyRegistration(tx, view, voteKey, voteAddress);
+
+            if( result == VoteKeyParseResult::Valid ){
+
+                auto cachedVoteKey = mapVoteKeys.find(voteKey);
+                auto cachedVoteAddress = std::find_if(mapVoteKeys.begin(), mapVoteKeys.end(),
+                                                      [voteAddress](const std::pair<CVoteKey, CVoteKeyValue> & entry) -> bool {
+                                                         return entry.second.voteAddress == voteAddress;
+                                                      }
+                                                   );
+
+                if( GetVoteKeyValue(voteKey, voteKeyValue) ){
+                    result = VoteKeyParseResult::VoteKeyAlreadyRegistered;
+                    LogPrint("votekeys", "VoteKey %s already registered for address %s, tx=%s\n", voteKey.ToString(), voteKeyValue.voteAddress.ToString(), tx.GetHash().ToString());
+                }else if( cachedVoteKey != mapVoteKeys.end() ){
+                    result = VoteKeyParseResult::VoteKeyAlreadyRegistered;
+                    LogPrint("votekeys", "VoteKey %s already cached for address %s, tx=%s\n", voteKey.ToString(), cachedVoteKey->second.voteAddress.ToString(), tx.GetHash().ToString());
+                }else if( cachedVoteAddress != mapVoteKeys.end() ){
+                    result = VoteKeyParseResult::VoteAddressAlreadyRegistered;
+                    LogPrint("votekeys", "VoteAddress %s already cached for VoteKey %s, tx=%s\n", voteAddress.ToString(), cachedVoteAddress->first.ToString(), tx.GetHash().ToString());
+                }else if( GetVoteKeyForAddress(voteAddress, otherVoteKey) ){
+                    result = VoteKeyParseResult::VoteAddressAlreadyRegistered;
+                    LogPrint("votekeys", "VoteAddress %s already registered with VoteKey %s, tx=%s\n", voteAddress.ToString(), otherVoteKey.ToString(), tx.GetHash().ToString());
+                }else{
+
+                    voteKeyValue.voteAddress = voteAddress;
+                    voteKeyValue.nBlockHeight = pindex->nHeight;
+                    voteKeyValue.nTxHash = tx.GetHash();
+
+                    mapVoteKeys.insert(std::make_pair(voteKey, voteKeyValue));
+                    LogPrint("votekeys", "Registered VoteKey %s for address %s, tx=%s\n", voteKey.ToString(), voteAddress.ToString(), tx.GetHash().ToString());
+                }
+
+            }else{
+                LogPrint("votekeys", "Invalid VoteKey registration %s, result=%d\n", tx.GetHash().ToString(), result);
+            }
+
+            if( result != VoteKeyParseResult::Valid  )
+                vecInvalidVoteKeyRegistrations.push_back(std::make_pair(CVoteKeyRegistrationKey(pindex->nHeight, tx.GetHash()), result));
+
+        }
+        */
 
         CTxUndo undoDummy;
         if (i > 0) {
@@ -2298,6 +2688,10 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     if (fJustCheck)
         return true;
 
+    if( !fIsVerifyDB && smartRewardsResult.IsValid() ){
+        prewards->CommitBlock(pindex, smartRewardsResult);
+    }
+
     // Write undo information to disk
     if (pindex->GetUndoPos().IsNull() || !pindex->IsValid(BLOCK_VALID_SCRIPTS))
     {
@@ -2317,11 +2711,11 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         setDirtyBlockIndex.insert(pindex);
     }
 
-    if (fTxIndex)
+    if (!fIsVerifyDB && fTxIndex)
         if (!pblocktree->WriteTxIndex(vPos))
             return AbortNode(state, "Failed to write transaction index");
 
-    if (fAddressIndex) {
+    if (!fIsVerifyDB && fAddressIndex) {
         if (!pblocktree->WriteAddressIndex(addressIndex)) {
             return AbortNode(state, "Failed to write address index");
         }
@@ -2331,13 +2725,28 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         }
     }
 
-    if (fSpentIndex)
+    if (!fIsVerifyDB && fSpentIndex)
         if (!pblocktree->UpdateSpentIndex(spentIndex))
-            return AbortNode(state, "Failed to write transaction index");
+            return AbortNode(state, "Failed to write spent index");
 
-    if (fTimestampIndex)
+    if (!fIsVerifyDB && fTimestampIndex)
         if (!pblocktree->WriteTimestampIndex(CTimestampIndexKey(pindex->nTime, pindex->GetBlockHash())))
             return AbortNode(state, "Failed to write timestamp index");
+
+    if (!fIsVerifyDB && fDepositIndex) {
+
+        if( !pblocktree->WriteDepositIndex(depositIndex) ){
+            return AbortNode(state, "Failed to write deposit index");
+        }
+    }
+
+    /* WIP-VOTING uncomment
+    if ( vecInvalidVoteKeyRegistrations.size() && !pblocktree->WriteInvalidVoteKeyRegistrations(vecInvalidVoteKeyRegistrations) )
+        return AbortNode(state, "Failed to write invalid VoteKey registrations");
+
+    if( mapVoteKeys.size() && !pblocktree->WriteVoteKeys(mapVoteKeys) )
+        return AbortNode(state, "Failed to write VoteKeys");
+    */
 
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
@@ -2402,8 +2811,10 @@ bool static FlushStateToDisk(CValidationState &state, FlushStateMode mode) {
     bool fPeriodicWrite = mode == FLUSH_STATE_PERIODIC && nNow > nLastWrite + (int64_t)DATABASE_WRITE_INTERVAL * 1000000;
     // It's been very long since we flushed the cache. Do this infrequently, to optimize cache usage.
     bool fPeriodicFlush = mode == FLUSH_STATE_PERIODIC && nNow > nLastFlush + (int64_t)DATABASE_FLUSH_INTERVAL * 1000000;
+    // The cache is over the limit, we have to write now.
+    bool fRewardsNeedsSync = prewards->NeedsCacheWrite();
     // Combine all conditions that result in a full cache flush.
-    bool fDoFullFlush = (mode == FLUSH_STATE_ALWAYS) || fCacheLarge || fCacheCritical || fPeriodicFlush || fFlushForPrune;
+    bool fDoFullFlush = (mode == FLUSH_STATE_ALWAYS) || fCacheLarge || fCacheCritical || fPeriodicFlush || fFlushForPrune || fRewardsNeedsSync;
     // Write blocks and block index to disk.
     if (fDoFullFlush || fPeriodicWrite) {
         // Depend on nMinDiskSpace to ensure we can write block index
@@ -2426,6 +2837,9 @@ bool static FlushStateToDisk(CValidationState &state, FlushStateMode mode) {
                 setDirtyBlockIndex.erase(it++);
             }
             if (!pblocktree->WriteBatchSync(vFiles, nLastBlockFile, vBlocks)) {
+                return AbortNode(state, "Files to write to block index database");
+            }
+            if (!prewards->SyncCached()) {
                 return AbortNode(state, "Files to write to block index database");
             }
         }
@@ -2479,10 +2893,15 @@ void static UpdateTip(CBlockIndex *pindexNew) {
     mempool.AddTransactionsUpdated(1);
 
     if(fDebug || !(pindexNew->nHeight % 1000) ){
-        LogPrintf("%s: new best=%s  height=%d  log2_work=%.8g  tx=%lu  date=%s progress=%f  cache=%.1fMiB(%utxo)\n", __func__,
-          chainActive.Tip()->GetBlockHash().ToString(), chainActive.Height(), log(chainActive.Tip()->nChainWork.getdouble())/log(2.0), (unsigned long)chainActive.Tip()->nChainTx,
-          DateTimeStrFormat("%Y-%m-%d %H:%M:%S", chainActive.Tip()->GetBlockTime()),
-          Checkpoints::GuessVerificationProgress(chainParams.Checkpoints(), chainActive.Tip()), pcoinsTip->DynamicMemoryUsage() * (1.0 / (1<<20)), pcoinsTip->GetCacheSize());
+
+        double dProgress = Checkpoints::GuessVerificationProgress(chainParams.Checkpoints(), chainActive.Tip());
+
+        if( LogAcceptCategory("tip") || dProgress > 0.95 ){
+            LogPrintf("%s: new best=%s  height=%d  log2_work=%.8g  tx=%lu  date=%s progress=%f  cache=%.1fMiB(%utxo)\n", __func__,
+              chainActive.Tip()->GetBlockHash().ToString(), chainActive.Height(), log(chainActive.Tip()->nChainWork.getdouble())/log(2.0), (unsigned long)chainActive.Tip()->nChainTx,
+              DateTimeStrFormat("%Y-%m-%d %H:%M:%S", chainActive.Tip()->GetBlockTime()),
+              dProgress, pcoinsTip->DynamicMemoryUsage() * (1.0 / (1<<20)), pcoinsTip->GetCacheSize());
+        }
     }
 
     cvBlockChange.notify_all();
@@ -2550,86 +2969,6 @@ bool static DisconnectTip(CValidationState& state, const Consensus::Params& cons
     }
     LogPrint("bench", "- Disconnect block: %.2fms\n", (GetTimeMicros() - nStart) * 0.001);
 
-    // Zerocoin reorg, set mint to height -1, id -1
-    list <CZerocoinEntry> listPubCoin = list<CZerocoinEntry>();
-    CWalletDB walletdb(pwalletMain->strWalletFile);
-    walletdb.ListPubCoin(listPubCoin);
-
-    list <CZerocoinSpendEntry> listCoinSpendSerial;
-    walletdb.ListCoinSpendSerial(listCoinSpendSerial);
-
-    BOOST_FOREACH(const CTransaction &tx, block.vtx){
-        // Check Spend Zerocoin Transaction
-        if (tx.IsZerocoinSpend()) {
-            BOOST_FOREACH(const CZerocoinSpendEntry &item, listCoinSpendSerial) {
-                if (item.hashTx == tx.GetHash()) {
-                    BOOST_FOREACH(const CZerocoinEntry &pubCoinItem, listPubCoin) {
-                        if (pubCoinItem.value == item.pubCoin) {
-                            CZerocoinEntry pubCoinTx;
-                            pubCoinTx.nHeight = pubCoinItem.nHeight;
-                            pubCoinTx.denomination = pubCoinItem.denomination;
-                            // UPDATE FOR INDICATE IT HAS BEEN RESET
-                            pubCoinTx.IsUsed = false;
-                            pubCoinTx.randomness = pubCoinItem.randomness;
-                            pubCoinTx.serialNumber = pubCoinItem.serialNumber;
-                            pubCoinTx.value = pubCoinItem.value;
-                            pubCoinTx.id = pubCoinItem.id;
-                            walletdb.WriteZerocoinEntry(pubCoinTx);
-                            LogPrintf("DisconnectTip() -> NotifyZerocoinChanged\n");
-                            LogPrintf("pubcoin=%s, isUsed=New\n", pubCoinItem.value.GetHex());
-                            pwalletMain->NotifyZerocoinChanged(pwalletMain, pubCoinItem.value.GetHex(), "New", CT_UPDATED);
-                            walletdb.EraseCoinSpendSerialEntry(item);
-                            pwalletMain->EraseFromWallet(item.hashTx);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check Mint Zerocoin Transaction
-        BOOST_FOREACH(const CTxOut txout, tx.vout) {
-            if (!txout.scriptPubKey.empty() && txout.scriptPubKey.IsZerocoinMint()) {
-                vector<unsigned char> vchZeroMint;
-                vchZeroMint.insert(vchZeroMint.end(), txout.scriptPubKey.begin() + 6, txout.scriptPubKey.begin() + txout.scriptPubKey.size());
-                CBigNum pubCoin;
-                pubCoin.setvch(vchZeroMint);
-                int zerocoinMintHeight = -1;
-                BOOST_FOREACH(const CZerocoinEntry &pubCoinItem, listPubCoin) {
-                    if (pubCoinItem.value == pubCoin) {
-                        zerocoinMintHeight = pubCoinItem.nHeight;
-                        CZerocoinEntry pubCoinTx;
-                        pubCoinTx.id = -1;
-                        pubCoinTx.IsUsed = pubCoinItem.IsUsed;
-                        pubCoinTx.randomness = pubCoinItem.randomness;
-                        pubCoinTx.denomination = pubCoinItem.denomination;
-                        pubCoinTx.serialNumber = pubCoinItem.serialNumber;
-                        pubCoinTx.value = pubCoin;
-                        pubCoinTx.nHeight = -1;
-                        LogPrintf("- Pubcoin Disconnect Reset Pubcoin Id: %d Height: %d\n", pubCoinTx.id, pindexDelete->nHeight);
-                        walletdb.WriteZerocoinEntry(pubCoinTx);
-                    }
-
-                }
-
-                BOOST_FOREACH(const CZerocoinEntry &pubCoinItem, listPubCoin) {
-                    if (pubCoinItem.nHeight > zerocoinMintHeight) {
-                        CZerocoinEntry pubCoinTx;
-                        pubCoinTx.id = -1;
-                        pubCoinTx.IsUsed = pubCoinItem.IsUsed;
-                        pubCoinTx.randomness = pubCoinItem.randomness;
-                        pubCoinTx.denomination = pubCoinItem.denomination;
-                        pubCoinTx.serialNumber = pubCoinItem.serialNumber;
-                        pubCoinTx.value = pubCoin;
-                        pubCoinTx.nHeight = -1;
-                        LogPrintf("- Disconnect Reset Pubcoin Id: %d Height: %d\n", pubCoinTx.id, pindexDelete->nHeight);
-                        walletdb.WriteZerocoinEntry(pubCoinTx);
-                    }
-
-                }
-            }
-        }
-    }
-
     // Write the chain state to disk, if necessary.
     if (!FlushStateToDisk(state, FLUSH_STATE_IF_NEEDED))
         return false;
@@ -2688,7 +3027,7 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
     LogPrint("bench", "  - Load block from disk: %.2fms [%.2fs]\n", (nTime2 - nTime1) * 0.001, nTimeReadFromDisk * 0.000001);
     {
         CCoinsViewCache view(pcoinsTip);
-        bool rv = ConnectBlock(*pblock, state, pindexNew, view);
+        bool rv = ConnectBlock(*pblock, state, pindexNew, view, false, false);
         GetMainSignals().BlockChecked(*pblock, state);
         if (!rv) {
             if (state.IsInvalid())
@@ -2724,10 +3063,6 @@ bool static ConnectTip(CValidationState& state, const CChainParams& chainparams,
     int64_t nTime6 = GetTimeMicros(); nTimePostConnect += nTime6 - nTime5; nTimeTotal += nTime6 - nTime1;
     LogPrint("bench", "  - Connect postprocess: %.2fms [%.2fs]\n", (nTime6 - nTime5) * 0.001, nTimePostConnect * 0.000001);
     LogPrint("bench", "- Connect block: %.2fms [%.2fs]\n", (nTime6 - nTime1) * 0.001, nTimeTotal * 0.000001);
-
-    //### SMARTCASH START
-    if(pindexNew->nHeight > 0) prewards->ProcessBlock(pindexNew, chainparams);
-    //### SMARTCASH END
 
     return true;
 }
@@ -3278,7 +3613,7 @@ bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool f
     return true;
 }
 
-bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bool fCheckMerkleRoot)
+bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bool fCheckMerkleRoot, bool isVerifyDB)
 {
      // These are checks that are independent of context.
 
@@ -3356,7 +3691,7 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
 
     // Check transactions
     BOOST_FOREACH(const CTransaction& tx, block.vtx)
-        if (!CheckTransaction(tx, state, tx.GetHash(), false, getNHeight(block)))
+        if (!CheckTransaction(tx, state, tx.GetHash(), isVerifyDB, getNHeight(block)))
             return state.Invalid(false, state.GetRejectCode(), state.GetRejectReason(),
                                  strprintf("Transaction check failed (tx hash %s) %s", tx.GetHash().ToString(), state.GetDebugMessage()));
 
@@ -3696,7 +4031,7 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, const CCha
     return true;
 }
 
-static bool IsSuperMajority(int minVersion, const CBlockIndex* pstart, unsigned nRequired, const Consensus::Params& consensusParams)
+bool IsSuperMajority(int minVersion, const CBlockIndex* pstart, unsigned nRequired, const Consensus::Params& consensusParams)
 {
     unsigned int nFound = 0;
     for (int i = 0; i < consensusParams.nMajorityWindow && nFound < nRequired && pstart != NULL; i++)
@@ -3754,7 +4089,7 @@ bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams,
         return false;
     if (!ContextualCheckBlock(block, state, pindexPrev))
         return false;
-    if (!ConnectBlock(block, state, &indexDummy, viewNew, true))
+    if (!ConnectBlock(block, state, &indexDummy, viewNew, true, true))
         return false;
     assert(state.IsValid());
 
@@ -4023,9 +4358,18 @@ bool static LoadBlockIndexDB()
     pblocktree->ReadReindexing(fReindexing);
     fReindex |= fReindexing;
 
+    bool fCheckIndex = false;
     // Check whether we have a transaction index
-    pblocktree->ReadFlag("txindex", fTxIndex);
-    LogPrintf("%s: transaction index %s\n", __func__, fTxIndex ? "enabled" : "disabled");
+    pblocktree->ReadFlag("txindex", fCheckIndex);
+    // If there is no txindex we need to reindex
+    fReindex |= !fCheckIndex;
+    LogPrintf("%s: transaction index %s\n", __func__, fCheckIndex ? "enabled" : "disabled");
+
+    // Check whether we have a transaction index
+    pblocktree->ReadFlag("addressindex", fCheckIndex);
+    // If there is no txindex we need to reindex
+    fReindex |= !fCheckIndex;
+    LogPrintf("%s: addressindex index %s\n", __func__, fCheckIndex ? "enabled" : "disabled");
 
     // Load pointer to end of best chain
     BlockMap::iterator it = mapBlockIndex.find(pcoinsTip->GetBestBlock());
@@ -4075,6 +4419,7 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
     {
         boost::this_thread::interruption_point();
         uiInterface.ShowProgress(_("Verifying blocks..."), std::max(1, std::min(99, (int)(((double)(chainActive.Height() - pindex->nHeight)) / (double)nCheckDepth * (nCheckLevel >= 4 ? 50 : 100)))));
+
         if (pindex->nHeight < chainActive.Height()-nCheckDepth)
             break;
         CBlock block;
@@ -4082,7 +4427,7 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
         if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus()))
             return error("VerifyDB(): *** ReadBlockFromDisk failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
         // check level 1: verify block validity
-        if (nCheckLevel >= 1 && !CheckBlock(block, state))
+        if (nCheckLevel >= 1 && !CheckBlock(block, state, true, true, true))
             return error("VerifyDB(): *** found bad block at %d, hash=%s\n", pindex->nHeight, pindex->GetBlockHash().ToString());
         // check level 2: verify undo validity
         if (nCheckLevel >= 2 && pindex) {
@@ -4095,10 +4440,11 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
         }
         // check level 3: check for inconsistencies during memory-only disconnect of tip blocks
         if (nCheckLevel >= 3 && pindex == pindexState && (coins.DynamicMemoryUsage() + pcoinsTip->DynamicMemoryUsage()) <= nCoinCacheUsage) {
-            DisconnectResult res = DisconnectBlock(block, state, pindex, coins);
+            DisconnectResult res = DisconnectBlock(block, state, pindex, coins, true);
             if (res == DISCONNECT_FAILED) {
                 return error("VerifyDB(): *** irrecoverable inconsistency in block data at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
             }
+
             pindexState = pindex->pprev;
             if (res == DISCONNECT_UNCLEAN) {
                 nGoodTransactions = 0;
@@ -4123,7 +4469,7 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
             CBlock block;
             if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus()))
                 return error("VerifyDB(): *** ReadBlockFromDisk failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
-            if (!ConnectBlock(block, state, pindex, coins))
+            if (!ConnectBlock(block, state, pindex, coins, false, true))
                 return error("VerifyDB(): *** found unconnectable block at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
         }
     }
@@ -4178,8 +4524,9 @@ bool InitBlockIndex(const CChainParams& chainparams)
     //fTxIndex = GetBoolArg("-txindex", DEFAULT_TXINDEX);
     pblocktree->WriteFlag("txindex", fTxIndex);
 
+    // addressindex option is currently disabled, defaults to true.
     // Use the provided setting for -addressindex in the new database
-    fAddressIndex = GetBoolArg("-addressindex", DEFAULT_ADDRESSINDEX);
+    //fAddressIndex = GetBoolArg("-addressindex", DEFAULT_ADDRESSINDEX);
     pblocktree->WriteFlag("addressindex", fAddressIndex);
 
     // Use the provided setting for -timestampindex in the new database
@@ -4188,6 +4535,10 @@ bool InitBlockIndex(const CChainParams& chainparams)
 
     fSpentIndex = GetBoolArg("-spentindex", DEFAULT_SPENTINDEX);
     pblocktree->WriteFlag("spentindex", fSpentIndex);
+
+    // Use the provided setting for -addressindex in the new database
+    fDepositIndex = GetBoolArg("-depositindex", DEFAULT_DEPOSITINDEX);
+    pblocktree->WriteFlag("depositindex", fDepositIndex);
 
     // Check whether we're already initialized
     if (chainActive.Genesis() != NULL)
@@ -4543,3 +4894,296 @@ public:
         mapBlockIndex.clear();
     }
 } instance_of_cmaincleanup;
+
+bool GetVoteKeys(std::vector<std::pair<CVoteKey,CVoteKeyValue>> &vecVoteKeys)
+{
+    if (!pblocktree->ReadVoteKeys(vecVoteKeys)){
+        LogPrint("votekeys", "GetVoteKeys failed\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool GetVoteKeyForAddress(const CSmartAddress &voteAddress, CVoteKey &voteKey)
+{
+    if (!pblocktree->ReadVoteKeyForAddress(voteAddress, voteKey)){
+        LogPrint("votekeys", "GetVoteKeyForAddress failed for address: %s\n", voteAddress.ToString() );
+        return false;
+    }
+
+    return voteKey.IsValid();
+}
+
+bool GetVoteKeyValue(const CVoteKey &voteKey, CVoteKeyValue &voteKeyValue)
+{
+    if (!pblocktree->ReadVoteKeyValue(voteKey, voteKeyValue)){
+        LogPrint("votekeys", "GetVoteKeyValue failed for key: %s\n", voteKey.ToString() );
+        return false;
+    }
+
+    return voteKeyValue.voteAddress.IsValid();
+}
+
+bool GetInvalidVoteKeyRegistration(const uint256 &txHash)
+{
+    CVoteKeyRegistrationKey registrationKey;
+    VoteKeyParseResult result;
+
+    if (!pblocktree->ReadInvalidVoteKeyRegistration(txHash, registrationKey, result) ){
+        LogPrint("votekeys", "GetInvalidVoteKeyRegistration failed for txhash: %s\n", txHash.ToString() );
+        return false;
+    }
+
+    return !registrationKey.nTxHash.IsNull();
+}
+
+VoteKeyParseResult ParseVoteKeyRegistration(const CTransaction &tx, CVoteKey &voteKey, CSmartAddress &voteAddress, bool fValidate)
+{
+
+    if( !tx.IsVoteKeyRegistration() ) return VoteKeyParseResult::IsNoRegistrationTx;
+
+    unsigned char cRegisterOption;
+    std::vector<unsigned char> vecSigVoteKey, vecSigVoteAddress;
+
+    for( const CTxOut& out : tx.vout ){
+
+        if( out.IsVoteKeyRegistrationData() ){
+            std::vector<unsigned char> scriptData;
+            scriptData.insert(scriptData.end(), out.scriptPubKey.begin() + 4, out.scriptPubKey.end());
+            CDataStream ss(scriptData, SER_NETWORK, 0);
+
+            ss >> cRegisterOption;
+            ss >> voteKey;
+            ss >> vecSigVoteKey;
+
+            if( cRegisterOption == 0x02 ){
+                ss >> voteAddress;
+                ss >> vecSigVoteAddress;
+            }
+
+            break;
+        }
+
+    }
+
+    if( cRegisterOption < 0x01 || cRegisterOption > 0x02 ){
+        LogPrint("votekeys","ParseVoteKeyRegistration -- Invalid register option found: %d, tx: %s\n", cRegisterOption, tx.ToString());
+        return VoteKeyParseResult::InvalidRegisterOption;
+    }
+
+    if( fValidate && cRegisterOption == 0x01 ){
+        CTransaction rTx;
+        uint256 rBlockHash;
+        const CTxIn &in = tx.vin[0];
+
+        if(!::GetTransaction(in.prevout.hash, rTx, Params().GetConsensus(), rBlockHash)){
+            LogPrint("votekeys", "ParseVoteKeyRegistration: GetTransaction - %s\n Input: %s\n", tx.ToString(), in.prevout.hash.ToString());
+            return VoteKeyParseResult::TxResolveFailed;
+        }
+
+        CTxOut rOut = rTx.vout[in.prevout.n];
+
+        std::vector<CTxDestination> addresses;
+        txnouttype type;
+        int nRequired;
+
+        if (!ExtractDestinations(rOut.scriptPubKey, type, addresses, nRequired) || addresses.size() != 1) {
+            LogPrint("votekeys", "ParseVoteKeyRegistration -- Couldn't extract address, %s\n", tx.ToString());
+            return VoteKeyParseResult::AddressResolveFailed;
+        }
+
+        voteAddress = CSmartAddress(addresses[0]);
+    }
+
+    CDataStream ss(SER_GETHASH, 0);
+    uint256 sigHash;
+    if( fValidate ){
+        ss << strMessageMagic;
+        ss << voteKey;
+        ss << voteAddress;
+        sigHash = Hash(ss.begin(), ss.end());
+    }
+
+    std::string strError;
+    CKeyID keyId;
+
+    if( !voteKey.GetKeyID(keyId) ){
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- Invalid voteKey found: %s, tx: %s\n", voteKey.ToString(), tx.ToString());
+        return VoteKeyParseResult::InvalidVoteKey;
+    }
+
+    if( fValidate && !CHashSigner::VerifyHash(sigHash, keyId, vecSigVoteKey, strError ) ){
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- VoteKey signature verification failed: %s\n", strError);
+        return VoteKeyParseResult::InvalidVoteKeySignature;
+    }
+
+    if( cRegisterOption == 0x02 ){
+
+        if( !voteAddress.GetKeyID(keyId) ){
+            LogPrint("votekeys", "ParseVoteKeyRegistration -- Invalid voteAddress found: %s, tx: %s\n", voteKey.ToString(), tx.ToString());
+            return VoteKeyParseResult::InvalidVoteAddress;
+        }
+
+        if( fValidate && !CHashSigner::VerifyHash(sigHash, keyId, vecSigVoteAddress, strError ) ){
+            LogPrint("votekeys", "ParseVoteKeyRegistration -- VoteKey signature verification failed: %s\n", strError);
+            return VoteKeyParseResult::InvalidVoteAddressSignature;
+        }
+    }
+
+    if( fValidate){
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- Valid vote key registration [Option %d] found %s. Key %s for address: %s\n",
+              cRegisterOption, tx.GetHash().ToString(), voteKey.ToString(), voteAddress.ToString());
+    }else{
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- Valid vote key registration [Option %d] found %s. Key %s\n",
+              cRegisterOption, tx.GetHash().ToString(), voteKey.ToString());
+    }
+
+    return VoteKeyParseResult::Valid;
+}
+
+
+VoteKeyParseResult ParseVoteKeyRegistration(const CTransaction &tx, CCoinsViewCache& view, CVoteKey &voteKey, CSmartAddress &voteAddress, bool fValidate)
+{
+
+    if( !tx.IsVoteKeyRegistration() ) return VoteKeyParseResult::IsNoRegistrationTx;
+
+    unsigned char cRegisterOption;
+    std::vector<unsigned char> vecSigVoteKey, vecSigVoteAddress;
+
+    for( const CTxOut& out : tx.vout ){
+
+        if( out.IsVoteKeyRegistrationData() ){
+            std::vector<unsigned char> scriptData;
+            scriptData.insert(scriptData.end(), out.scriptPubKey.begin() + 4, out.scriptPubKey.end());
+            CDataStream ss(scriptData, SER_NETWORK, 0);
+
+            ss >> cRegisterOption;
+            ss >> voteKey;
+            ss >> vecSigVoteKey;
+
+            if( cRegisterOption == 0x02 ){
+                ss >> voteAddress;
+                ss >> vecSigVoteAddress;
+            }
+
+            break;
+        }
+
+    }
+
+    if( cRegisterOption < 0x01 || cRegisterOption > 0x02 ){
+        LogPrint("votekeys","ParseVoteKeyRegistration -- Invalid register option found: %d, tx: %s\n", cRegisterOption, tx.ToString());
+        return VoteKeyParseResult::InvalidRegisterOption;
+    }
+
+    if( fValidate && cRegisterOption == 0x01 ){
+
+        const Coin &coin = view.AccessCoin(tx.vin[0].prevout);
+        const CTxOut &rOut = coin.out;
+
+        std::vector<CTxDestination> addresses;
+        txnouttype type;
+        int nRequired;
+
+        if (!ExtractDestinations(rOut.scriptPubKey, type, addresses, nRequired) || addresses.size() != 1) {
+            LogPrint("votekeys", "ParseVoteKeyRegistration -- Couldn't extract address, %s\n", tx.ToString());
+            return VoteKeyParseResult::AddressResolveFailed;
+        }
+
+        voteAddress = CSmartAddress(addresses[0]);
+    }
+
+    CDataStream ss(SER_GETHASH, 0);
+    uint256 sigHash;
+    if( fValidate ){
+        ss << strMessageMagic;
+        ss << voteKey;
+        ss << voteAddress;
+        sigHash = Hash(ss.begin(), ss.end());
+    }
+
+    std::string strError;
+    CKeyID keyId;
+
+    if( !voteKey.GetKeyID(keyId) ){
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- Invalid voteKey found: %s, tx: %s\n", voteKey.ToString(), tx.ToString());
+        return VoteKeyParseResult::InvalidVoteKey;
+    }
+
+    if( fValidate && !CHashSigner::VerifyHash(sigHash, keyId, vecSigVoteKey, strError ) ){
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- VoteKey signature verification failed: %s\n", strError);
+        return VoteKeyParseResult::InvalidVoteKeySignature;
+    }
+
+    if( cRegisterOption == 0x02 ){
+
+        if( !voteAddress.GetKeyID(keyId) ){
+            LogPrint("votekeys", "ParseVoteKeyRegistration -- Invalid voteAddress found: %s, tx: %s\n", voteKey.ToString(), tx.ToString());
+            return VoteKeyParseResult::InvalidVoteAddress;
+        }
+
+        if( fValidate && !CHashSigner::VerifyHash(sigHash, keyId, vecSigVoteAddress, strError ) ){
+            LogPrint("votekeys", "ParseVoteKeyRegistration -- VoteKey signature verification failed: %s\n", strError);
+            return VoteKeyParseResult::InvalidVoteAddressSignature;
+        }
+    }
+
+    if( fValidate){
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- Valid vote key registration [Option %d] found %s. Key %s for address: %s\n",
+              cRegisterOption, tx.GetHash().ToString(), voteKey.ToString(), voteAddress.ToString());
+    }else{
+        LogPrint("votekeys", "ParseVoteKeyRegistration -- Valid vote key registration [Option %d] found %s. Key %s\n",
+              cRegisterOption, tx.GetHash().ToString(), voteKey.ToString());
+    }
+
+    return VoteKeyParseResult::Valid;
+}
+
+VoteKeyParseResult CheckVoteKeyRegistration(const CTransaction &tx, bool fValidate)
+{
+    CVoteKey voteKey;
+    CSmartAddress voteAddress;
+    return ParseVoteKeyRegistration(tx, voteKey, voteAddress, fValidate);
+}
+
+bool IsRegisteredForVoting(const CSmartAddress &address, CVoteKey &voteKey, int &nHeight)
+{
+    CVoteKeyValue voteKeyValue;
+    if( GetVoteKeyForAddress(address, voteKey) ){
+
+        if(  voteKey.IsValid() && GetVoteKeyValue(voteKey, voteKeyValue) ){
+            nHeight = voteKeyValue.nBlockHeight;
+            return voteKeyValue.IsValid();
+        }
+    }
+
+    return false;
+}
+
+bool IsRegisteredForVoting(const CSmartAddress &address)
+{
+    CVoteKey voteKey;
+    int nHeight;
+    return IsRegisteredForVoting(address, voteKey, nHeight);
+}
+
+bool IsRegisteredForVoting(const CVoteKey &voteKey, int &nHeight)
+{
+    CVoteKeyValue voteKeyValue;
+    if( GetVoteKeyValue(voteKey, voteKeyValue) ){
+        nHeight = voteKeyValue.nBlockHeight;
+        return voteKeyValue.IsValid();
+    }
+
+    return false;
+}
+
+bool IsRegisteredForVoting(const CVoteKey &voteKey)
+{
+    CVoteKeyValue voteKeyValue;
+    if( GetVoteKeyValue(voteKey, voteKeyValue) )
+        return voteKeyValue.IsValid();
+
+    return false;
+}

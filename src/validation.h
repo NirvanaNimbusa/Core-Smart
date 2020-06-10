@@ -89,16 +89,16 @@ static const unsigned int UNDOFILE_CHUNK_SIZE = 0x100000; // 1 MiB
 /** Dust Hard Limit, ignored as wallet inputs (mininput default) */
 static const int64_t DUST_HARD_LIMIT = 1000;   // 0.00001 SMART mininput
 /** Maximum number of script-checking threads allowed */
-static const int MAX_SCRIPTCHECK_THREADS = 16;
+static const int MAX_SCRIPTCHECK_THREADS = 15;  // was 16
 /** -par default (number of script-checking threads, 0 = auto) */
 static const int DEFAULT_SCRIPTCHECK_THREADS = 0;
 /** Number of blocks that can be requested at any given time from a single peer. */
-static const int MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16;
+static const int MAX_BLOCKS_IN_TRANSIT_PER_PEER = 64;  //was 16
 /** Timeout in seconds during which a peer must stall block download progress before being disconnected. */
-static const unsigned int BLOCK_STALLING_TIMEOUT = 2;
+static const unsigned int BLOCK_STALLING_TIMEOUT = 1; //was 2
 /** Number of headers sent in one getheaders result. We rely on the assumption that if a peer sends
  *  less than this number, we reached its tip. Changing this value is a protocol upgrade. */
-static const unsigned int MAX_HEADERS_RESULTS = 2000;
+static const unsigned int MAX_HEADERS_RESULTS = 2000;  //was 2000
 /** Maximum depth of blocks we're willing to serve as compact blocks to peers
  *  when requested. For older blocks, a regular BLOCK response will be sent. */
 static const int MAX_CMPCTBLOCK_DEPTH = 5;
@@ -145,9 +145,11 @@ static const int64_t DEFAULT_MAX_TIP_AGE = 24 * 60 * 60;
 static const bool DEFAULT_PERMIT_BAREMULTISIG = false;
 static const bool DEFAULT_CHECKPOINTS_ENABLED = true;
 static const bool DEFAULT_TXINDEX = true;
-static const bool DEFAULT_ADDRESSINDEX = false;
+static const bool DEFAULT_INSTANTPAYINDEX = false;
+static const bool DEFAULT_ADDRESSINDEX = false; // WIP-VOTING, Voting set to true
 static const bool DEFAULT_TIMESTAMPINDEX = false;
 static const bool DEFAULT_SPENTINDEX = false;
+static const bool DEFAULT_DEPOSITINDEX = false;
 static const unsigned int DEFAULT_BANSCORE_THRESHOLD = 100;
 
 static const bool DEFAULT_TESTSAFEMODE = false;
@@ -189,6 +191,7 @@ extern bool fImporting;
 extern bool fReindex;
 extern int nScriptCheckThreads;
 extern bool fTxIndex;
+extern bool fInstantPayIndex;
 extern bool fIsBareMultisigStd;
 extern bool fRequireStandard;
 extern unsigned int nBytesPerSigOp;
@@ -236,6 +239,7 @@ static const int SYNC_TRANSACTION_NOT_IN_BLOCK = -1;
 // full block file chunks, we need the high water mark which triggers the prune to be
 // one 128MB block file + added 15% undo data = 147MB greater for a total of 545MB
 // Setting the target to > than 1414MB will make it likely we can respect the target.
+// x2 for 8MB blocks = 2818 - Assume blocks will be half full over 288 blocks.
 static const uint64_t MIN_DISK_SPACE_FOR_BLOCK_FILES = 1414 * 1024 * 1024;
 
 /** 
@@ -257,6 +261,13 @@ static const uint64_t MIN_DISK_SPACE_FOR_BLOCK_FILES = 1414 * 1024 * 1024;
  * @return True if state.IsValid()
  */
 bool ProcessNewBlock(const CChainParams& chainparams, const CBlock* pblock, bool fForceProcessing, const CDiskBlockPos* dbp, bool* fNewBlock);
+
+/**
+ * Returns true if there are nRequired or more blocks of minVersion or above
+ * in the last Consensus::Params::nMajorityWindow blocks, starting at pstart and going backwards.
+ */
+bool IsSuperMajority(int minVersion, const CBlockIndex* pstart, unsigned nRequired, const Consensus::Params& consensusParams);
+
 /**
  * Process incoming block headers.
  *
@@ -435,6 +446,30 @@ bool CheckSequenceLocks(const CTransaction &tx, int flags, LockPoints* lp = NULL
 bool GetBlockHash(uint256& hashRet, int nBlockHeight = -1); 
 
 /**
+ * Basic check if transaction is a valid vote key registration transaction.
+ */
+VoteKeyParseResult CheckVoteKeyRegistration(const CTransaction &tx, bool fValidate = true);
+
+/**
+ * Parse a vote key registration transaction.
+ */
+VoteKeyParseResult ParseVoteKeyRegistration(const CTransaction &tx, CVoteKey &voteKey, CSmartAddress &voteAddress, bool fValidate = true);
+VoteKeyParseResult ParseVoteKeyRegistration(const CTransaction &tx, CCoinsViewCache& view, CVoteKey &voteKey, CSmartAddress &voteAddress, bool fValidate = true);
+
+
+/**
+ * Check if the given address has already an registered voting key.
+ */
+bool IsRegisteredForVoting(const CSmartAddress &address);
+bool IsRegisteredForVoting(const CSmartAddress &address, CVoteKey &voteKey, int &nHeight);
+
+/**
+ * Check if the given voteKey is already registered.
+ */
+bool IsRegisteredForVoting(const CVoteKey &voteKey);
+bool IsRegisteredForVoting(const CVoteKey &voteKey, int &nHeight);
+
+/**
  * Closure representing one script verification
  * Note that this stores references to the spending transaction 
  */
@@ -477,8 +512,25 @@ bool GetSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value);
 bool GetAddressIndex(uint160 addressHash, int type,
                      std::vector<std::pair<CAddressIndexKey, CAmount> > &addressIndex,
                      int start = 0, int end = 0);
+bool GetAddresses(std::vector<CAddressListEntry> &addressList,int nEndHeight = -1, bool excludeZeroBalances = false);
+bool GetAddressUnspentCount(uint160 addressHash, int type, int &count, CAddressUnspentKey &lastIndex);
 bool GetAddressUnspent(uint160 addressHash, int type,
-                       std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > &unspentOutputs);
+                       std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > &unspentOutputs,
+                       const CAddressUnspentKey &start = CAddressUnspentKey(),
+                       int offset = -1, int limit = -1, bool reverse = false);
+bool GetDepositIndexCount(uint160 addressHash, int type, int &count, int &firstTime, int &lastTime, int start, int end);
+bool GetDepositIndex(uint160 addressHash, int type,
+                     std::vector<std::pair<CDepositIndexKey, CDepositValue>> &depositIndex,
+                     int start, int offset, int limit, bool reverse);
+
+bool GetInstantPayIndexCount(int &count, int &firstTime, int &lastTime, int start, int end);
+bool GetInstantPayIndex(std::vector<std::pair<CInstantPayIndexKey, CInstantPayValue>> &instantPayIndex,
+                        int start, int offset, int limit, bool reverse);
+
+bool GetVoteKeys(std::vector<std::pair<CVoteKey,CVoteKeyValue>> &vecVoteKeys);
+bool GetVoteKeyForAddress(const CSmartAddress &voteAddress, CVoteKey &voteKey);
+bool GetVoteKeyValue(const CVoteKey &voteKey, CVoteKeyValue &voteKeyValue);
+bool GetInvalidVoteKeyRegistration(const uint256 &txHash);
 
 /** Functions for disk access for blocks */
 bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart);
@@ -489,7 +541,7 @@ bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus
 
 /** Context-independent validity checks */
 bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool fCheckPOW = true);
-bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW = true, bool fCheckMerkleRoot = true);
+bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW = true, bool fCheckMerkleRoot = true, bool isVerifyDB = false);
 
 /** Context-dependent validity checks */
 bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& state, CBlockIndex *pindexPrev);
@@ -525,6 +577,13 @@ public:
     ~CVerifyDB();
     bool VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview, int nCheckLevel, int nCheckDepth);
 };
+
+inline CBlockIndex* LookupBlockIndex(const uint256& hash)
+{
+    AssertLockHeld(cs_main);
+    BlockMap::const_iterator it = mapBlockIndex.find(hash);
+    return it == mapBlockIndex.end() ? nullptr : it->second;
+}
 
 /** Find the last common block between the parameter chain and a locator. */
 CBlockIndex* FindForkInGlobalIndex(const CChain& chain, const CBlockLocator& locator);

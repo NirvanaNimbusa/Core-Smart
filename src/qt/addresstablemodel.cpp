@@ -17,6 +17,7 @@
 
 const QString AddressTableModel::Send = "S";
 const QString AddressTableModel::Receive = "R";
+const QString AddressTableModel::ReceiveNew = "N";
 const QString AddressTableModel::Zerocoin = "X";
 
 struct AddressTableEntry
@@ -95,21 +96,8 @@ public:
                 const std::string& strName = item.second.name;
                 cachedAddressTable.append(AddressTableEntry(addressType,
                                   QString::fromStdString(strName),
-                                  QString::fromStdString(address.ToString())));
-            }
-            //[zcoin] add load pubcoin
-            std::list<CZerocoinEntry> listPubcoin;
-            CWalletDB(wallet->strWalletFile).ListPubCoin(listPubcoin);
-            BOOST_FOREACH(const CZerocoinEntry& item, listPubcoin)
-            {
-                if(item.randomness != 0 && item.serialNumber != 0){
-                    const std::string& pubCoin = item.value.GetHex();
-                    const std::string& isUsed = item.IsUsed ? "Used" : "New";
-                    cachedAddressTable.append(AddressTableEntry(AddressTableEntry::Zerocoin,
-                                                                QString::fromStdString(isUsed),
-                                                                QString::fromStdString(pubCoin)));
-                }
-
+                                  QString::fromStdString(address.ToString())
+                                ));
             }
         }
         // qLowerBound() and qUpperBound() require our cachedAddressTable list to be sorted in asc order
@@ -163,42 +151,6 @@ public:
             parent->endRemoveRows();
             break;
         }
-    }
-    //[zcoin] updateEntry
-    void updateEntry(const QString &pubCoin, const QString &isUsed, int status)
-    {
-        // Find address / label in model
-        QList<AddressTableEntry>::iterator lower = qLowerBound(
-                cachedAddressTable.begin(), cachedAddressTable.end(), pubCoin, AddressTableEntryLessThan());
-        QList<AddressTableEntry>::iterator upper = qUpperBound(
-                cachedAddressTable.begin(), cachedAddressTable.end(), pubCoin, AddressTableEntryLessThan());
-        int lowerIndex = (lower - cachedAddressTable.begin());
-        bool inModel = (lower != upper);
-        AddressTableEntry::Type newEntryType = AddressTableEntry::Zerocoin;
-
-        switch(status)
-        {
-            case CT_NEW:
-                if(inModel)
-                {
-                    qWarning() << "Warning: AddressTablePriv::updateEntry: Got CT_NOW, but entry is already in model";
-                }
-                parent->beginInsertRows(QModelIndex(), lowerIndex, lowerIndex);
-                cachedAddressTable.insert(lowerIndex, AddressTableEntry(newEntryType, isUsed, pubCoin));
-                parent->endInsertRows();
-                break;
-            case CT_UPDATED:
-                if(!inModel)
-                {
-                    qWarning() << "Warning: AddressTablePriv::updateEntry: Got CT_UPDATED, but entry is not in model";
-                    break;
-                }
-                lower->type = newEntryType;
-                lower->label = isUsed;
-                parent->emitDataChanged(lowerIndex);
-                break;
-        }
-
     }
 
     int size()
@@ -398,14 +350,8 @@ void AddressTableModel::updateEntry(const QString &address,
     // Update address book model from Bitcoin core
     priv->updateEntry(address, label, isMine, purpose, status);
 }
-//[zcoin] AddressTableModel.updateEntry()
-void AddressTableModel::updateEntry(const QString &pubCoin, const QString &isUsed, int status)
-{
-    // Update stealth address book model from Bitcoin core
-    priv->updateEntry(pubCoin, isUsed, status);
-}
 
-QString AddressTableModel::addRow(const QString &type, const QString &label, const QString &address)
+QString AddressTableModel::addRow(const QString &type, const QString &label, const QString &address, int64_t lockTime)
 {
     std::string strLabel = label.toStdString();
     std::string strAddress = address.toStdString();
@@ -429,7 +375,7 @@ QString AddressTableModel::addRow(const QString &type, const QString &label, con
             }
         }
     }
-    else if(type == Receive)
+    else if(type == Receive || type == ReceiveNew)
     {
         // Generate a new address to associate with given label
         CPubKey newKey;
@@ -448,7 +394,21 @@ QString AddressTableModel::addRow(const QString &type, const QString &label, con
                 return QString();
             }
         }
-        strAddress = CBitcoinAddress(newKey.GetID()).ToString();
+
+        CKeyID keyID = newKey.GetID();
+        if(lockTime > 0 )
+        {
+            CScript redeemScript = GetLockedScriptForDestination(keyID, lockTime);
+            strAddress = CBitcoinAddress(CScriptID(redeemScript)).ToString(type == ReceiveNew);
+            {
+                LOCK(wallet->cs_wallet);
+                wallet->AddCScript(redeemScript);
+            }
+        }
+        else
+        {
+            strAddress = CBitcoinAddress(keyID).ToString(type == ReceiveNew);
+        }
     }
     else
     {
@@ -459,7 +419,7 @@ QString AddressTableModel::addRow(const QString &type, const QString &label, con
     {
         LOCK(wallet->cs_wallet);
         wallet->SetAddressBook(CBitcoinAddress(strAddress).Get(), strLabel,
-                               (type == Send ? "send" : "receive"));
+                                 (type == Send ? "send" : "receive"));
     }
     return QString::fromStdString(strAddress);
 }

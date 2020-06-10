@@ -191,6 +191,12 @@ enum opcodetype
     OP_ZEROCOINSPEND = 0xc2,
 };
 
+enum opreturnflags{
+    OP_RETURN_MINING_FLAG = 0x01,
+    OP_RETURN_VOTE_KEY_REG_FLAG = 0x02,
+    OP_RETURN_VOTE_PROOF_FLAG = 0x03,
+};
+
 const char* GetOpName(opcodetype opcode);
 
 class scriptnum_error : public std::runtime_error
@@ -625,15 +631,19 @@ public:
     unsigned int GetSigOpCount(const CScript& scriptSig) const;
 
     bool IsPayToPublicKeyHash() const;
+    bool IsPayToPublicKeyHashLocked() const;
+    bool IsPayToPublicKey() const;
 
     bool IsNormalPaymentScript() const;
 
     bool IsPayToScriptHash() const;
+    bool IsPayToScriptHashLocked() const;
     bool IsPayToWitnessScriptHash() const;
     bool IsWitnessProgram(int& version, std::vector<unsigned char>& program) const;
-    
+
     bool IsZerocoinMint() const;
     bool IsZerocoinSpend() const;
+    bool IsVoteKeyData() const;
     // Called by IsStandardTx.
     bool HasCanonicalPushes() const;
 

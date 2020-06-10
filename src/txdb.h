@@ -21,6 +21,7 @@
 class CBlockIndex;
 class CCoinsViewDBCursor;
 class uint256;
+struct CSmartAddress;
 
 //! Compensate for extra memory peak (x1.5-x1.9) at flush time.
 static constexpr int DB_PEAK_USAGE_FACTOR = 2;
@@ -126,15 +127,47 @@ public:
     bool ReadSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value);
     bool UpdateSpentIndex(const std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> >&vect);
     bool UpdateAddressUnspentIndex(const std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue > >&vect);
+    bool ReadAddressUnspentIndexCount(uint160 addressHash, int type, int &nCount, CAddressUnspentKey &lastIndex);
     bool ReadAddressUnspentIndex(uint160 addressHash, int type,
-                                 std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > &vect);
+                                 std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > &vect,
+                                 const CAddressUnspentKey &start = CAddressUnspentKey(),
+                                 int offset = -1, int limit = -1, bool reverse = false);
     bool WriteAddressIndex(const std::vector<std::pair<CAddressIndexKey, CAmount> > &vect);
     bool EraseAddressIndex(const std::vector<std::pair<CAddressIndexKey, CAmount> > &vect);
     bool ReadAddressIndex(uint160 addressHash, int type,
                           std::vector<std::pair<CAddressIndexKey, CAmount> > &addressIndex,
                           int start = 0, int end = 0);
+    bool ReadAddresses(std::vector<CAddressListEntry> &addressList, int nEndHeight, bool excludeZeroBalances);
     bool WriteTimestampIndex(const CTimestampIndexKey &timestampIndex);
     bool ReadTimestampIndex(const unsigned int &high, const unsigned int &low, std::vector<uint256> &vect);
+    bool ReadTimestampIndex(const unsigned int &timestamp, uint256 &blockHash);
+    bool WriteDepositIndex(const std::vector<std::pair<CDepositIndexKey, CDepositValue> > &vect);
+    bool EraseDepositIndex(const std::vector<std::pair<CDepositIndexKey, CDepositValue> > &vect);
+    bool ReadDepositIndex(uint160 addressHash, int type,
+                          std::vector<std::pair<CDepositIndexKey, CDepositValue> > &depositIndex,
+                          int start = 0, int offset = 0, int limit = 0, bool reverse = false);
+    bool ReadDepositIndexCount(uint160 addressHash, int type,
+                                        int &count,
+                                        int &firstTime, int &lastTime,
+                                        int start, int end);
+
+    bool WriteInstantPayLocks(std::map<CInstantPayIndexKey, CInstantPayValue> &mapLocks);
+    bool ReadInstantPayIndex(std::vector<std::pair<CInstantPayIndexKey, CInstantPayValue> > &instantPayIndex,
+                                            int start, int offset, int limit, bool reverse);
+    bool ReadInstantPayIndexCount(int &count, int &firstTime, int &lastTime,
+                                  int start, int end);
+
+    /** SmartVoting start **/
+    bool WriteInvalidVoteKeyRegistrations(std::vector<std::pair<CVoteKeyRegistrationKey, VoteKeyParseResult>> vecInvalidRegistrations);
+    bool EraseInvalidVoteKeyRegistrations(std::vector<CVoteKeyRegistrationKey> vecInvalidRegistrations);
+    bool ReadInvalidVoteKeyRegistration(const uint256 &txHash, CVoteKeyRegistrationKey &registrationKey, VoteKeyParseResult &result);
+    bool WriteVoteKeys(const std::map<CVoteKey, CVoteKeyValue> &mapVoteKeys);
+    bool EraseVoteKeys(const std::map<CVoteKey, CSmartAddress> &mapVoteKeys);
+    bool ReadVoteKeyForAddress(const CSmartAddress &voteAddress, CVoteKey &voteKey);
+    bool ReadVoteKeys(std::vector<std::pair<CVoteKey,CVoteKeyValue>> &vecVoteKeys);
+    bool ReadVoteKeyValue(const CVoteKey &voteKey, CVoteKeyValue &voteKeyValue);
+    /** SmartVoting end **/
+
     bool WriteFlag(const std::string &name, bool fValue);
     bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts(boost::function<CBlockIndex*(const uint256&)> insertBlockIndex);
